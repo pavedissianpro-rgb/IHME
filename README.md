@@ -2,84 +2,87 @@
 
 Application web pour organiser les séances d'un club de badminton et gérer les réponses de présence des membres.
 
-## Objectifs
-
-- Consulter les prochaines séances du club.
-- Répondre présent, absent ou incertain pour une séance.
-- Voir les membres inscrits à chaque séance.
-- Permettre aux responsables de créer et modifier des séances.
-- Consulter des statistiques de participation.
-
-## Technologies
-
-- **Frontend :** React
-- **Backend :** Node.js avec Express
-- **Base de données :** PostgreSQL
-- **Conteneurisation :** Docker et Docker Compose
-
-L'application est destinée à un seul club. Le frontend communique avec le backend via une API HTTP. Le backend gère les règles de l'application et l'accès à PostgreSQL. Les identifiants de la base de données sont fournis par des variables d'environnement et ne doivent pas être enregistrés dans Git.
-
-## Architecture envisagée
-
-```text
-badminton-club/
-├── frontend/           # Application React
-├── backend/            # API Node.js et Express
-├── docker-compose.yml  # Services de l'application et de PostgreSQL
-├── .env.example        # Exemple de configuration locale
-├── .gitignore
-└── README.md
-```
-
-Les dossiers et fichiers seront ajoutés au fur et à mesure du développement. Cette structure est une proposition de départ.
-
 ## Fonctionnalités
 
-### Pour les membres
-- Consulter les séances à venir, avec leur date, leur horaire et leur lieu.
-- Accéder à l'application sans créer de compte.
-- Choisir leur nom dans la liste des membres et indiquer leur réponse : présent, absent ou incertain.
-- Consulter la liste des participants.
-
-### Pour l'entraîneur
-- Créer, modifier et supprimer une séance.
-- Consulter les réponses des membres.
-- Accéder aux statistiques de participation.
-- Se connecter à un espace protégé pour gérer les séances.
-
-### À définir
-- Besoin éventuel de récupérer le mot de passe de l'entraîneur.
+- Calendrier des séances à venir avec horaires, lieu et décompte des réponses.
+- Réponse sans compte par sélection du nom : présent, absent ou peut-être.
+- Consultation des réponses des membres pour chaque séance.
+- Espace entraîneur protégé par mot de passe : création, modification et suppression des séances et des membres.
+- Statistiques des séances passées et des présences par membre.
+- Persistance PostgreSQL et déploiement avec Docker Compose.
 
 ## Démarrage avec Docker
 
-Une fois `docker-compose.yml` et les fichiers de configuration créés, les services pourront être lancés depuis la racine du projet avec :
+Prérequis : Docker Desktop avec Docker Compose.
 
-```bash
-docker compose up --build
-```
+1. Copiez `.env.example` vers `.env`.
+2. Remplacez toutes les valeurs d’exemple, notamment `POSTGRES_PASSWORD`, `JWT_SECRET` (au moins 32 caractères aléatoires) et `ADMIN_PASSWORD`, par des secrets robustes. Le fichier `.env` est ignoré par Git.
+3. Depuis la racine du dépôt, lancez :
 
-Pour arrêter les services :
+   ```bash
+   docker compose up --build
+   ```
+
+4. Ouvrez [http://localhost:8080](http://localhost:8080) (ou le port défini par `APP_PORT`).
+5. Connectez-vous à l’espace entraîneur avec `ADMIN_EMAIL` et `ADMIN_PASSWORD`.
+
+Arrêter les services :
 
 ```bash
 docker compose down
 ```
 
-Les ports de l'application et de l'API, ainsi que les variables d'environnement nécessaires, seront documentés ici lorsqu'ils seront définis. Ne placez pas de vrais mots de passe dans le fichier `.env.example`.
+Les données PostgreSQL sont conservées dans le volume `postgres_data`. Pour arrêter les services sans perdre les données, ne supprimez pas ce volume. La suppression des données (`docker compose down -v`) est irréversible.
+
+Le compte entraîneur est créé au premier démarrage. `ADMIN_EMAIL` et `ADMIN_PASSWORD` sont des identifiants d'initialisation : modifier ces variables après la création du compte ne change pas le mot de passe déjà enregistré.
 
 ## Développement sans Docker
 
-Les commandes de lancement dépendront des scripts définis dans les projets React et Express. Le démarrage local du frontend, du backend et de PostgreSQL sera précisé après la création de ces projets.
+Prérequis : Node.js 20 ou plus récent et PostgreSQL.
 
-## État du projet
+1. Créez une base `badminton` et configurez les variables d'environnement nécessaires à l'API :
 
-Projet en cours de définition. Les fonctionnalités ci-dessus décrivent le périmètre envisagé ; elles ne sont pas nécessairement déjà implémentées. Une première étape de réalisation peut être la mise en place de l'API Express, de la base PostgreSQL et de l'application React dans Docker Compose.
+   ```text
+   DATABASE_URL=postgres://utilisateur:mot-de-passe@localhost:5432/badminton
+   JWT_SECRET=une-cle-aleatoire-d-au-moins-32-caracteres
+   ADMIN_EMAIL=coach@example.com
+   ADMIN_PASSWORD=un-mot-de-passe-robuste
+   ```
 
-## Informations complémentaires
+2. Dans un terminal, démarrez l'API :
 
-Les choix suivants sont retenus :
+   ```bash
+   cd backend
+   npm install
+   npm run dev
+   ```
 
-- L'application gère un seul club.
-- Les membres utilisent l'application sans compte et choisissent leur nom dans la liste pour répondre à une séance.
-- Seul l'entraîneur peut créer, modifier ou supprimer les séances ; son espace de gestion est protégé par connexion.
+3. Dans un autre terminal, démarrez le frontend :
 
-Les éventuelles consignes de cours sur les bibliothèques ou l'organisation des dossiers restent à préciser.
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+L'interface de développement est disponible à l'adresse indiquée par Vite (habituellement [http://localhost:5173](http://localhost:5173)). Vite relaie les appels `/api` vers l'API sur le port 3000.
+
+## API
+
+L'interface et l'API sont servies sur la même origine dans Docker. Les routes principales sont :
+
+| Méthode | Route | Accès |
+|---|---|---|
+| `GET` | `/api/health` | Public |
+| `GET` | `/api/sessions` | Public |
+| `GET` | `/api/sessions/:id/attendance` | Public |
+| `PUT` | `/api/sessions/:id/attendance` | Public |
+| `GET` | `/api/members` | Public |
+| `POST` | `/api/auth/login` | Public |
+| `POST` | `/api/auth/logout` | Public |
+| `GET` | `/api/auth/me` | Entraîneur |
+| `POST`, `PATCH`, `DELETE` | `/api/sessions` | Entraîneur |
+| `POST`, `DELETE` | `/api/members` | Entraîneur |
+| `GET` | `/api/stats` | Entraîneur |
+
+L'API crée les tables nécessaires au démarrage. Les réponses aux séances et les noms des membres sont visibles sans compte, conformément au fonctionnement prévu pour le club.
