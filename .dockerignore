@@ -1,7 +1,11 @@
 .git
-.env
-.env.*
-!.env.example
+.github
 node_modules
 dist
-npm-debug.log*
+.env
+.env.*
+.private
+deploy.curl
+backups
+*.dump
+*.log
