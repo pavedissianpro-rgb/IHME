@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from deploy.request import request_deployment
+from deploy.request import request_deployment, required_settings
 
 
 class FakeResponse:
@@ -33,6 +33,25 @@ class FakeOpener:
 
 
 class DeploymentRequestTests(unittest.TestCase):
+    def test_missing_github_settings_are_reported_by_name_only(self):
+        with self.assertRaisesRegex(ValueError, "DEPLOY_URL, DEPLOY_TOKEN"):
+            required_settings({
+                "DEPLOY_URL": "",
+                "DEPLOY_TOKEN": "",
+                "DIGEST": "sha256:" + "a" * 64,
+            })
+
+    def test_required_settings_return_values_without_logging_them(self):
+        digest = "sha256:" + "a" * 64
+        self.assertEqual(
+            required_settings({
+                "DEPLOY_URL": "https://deploy.example/__deploy/p01",
+                "DEPLOY_TOKEN": "private-token",
+                "DIGEST": digest,
+            }),
+            ("https://deploy.example/__deploy/p01", "private-token", digest),
+        )
+
     def test_sends_digest_and_registry_token_to_assigned_https_endpoint(self):
         opener = FakeOpener()
         digest = "sha256:" + "a" * 64
