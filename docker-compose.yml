@@ -20,6 +20,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost}
       PGHOST: database
       PGPORT: 5432
       PGDATABASE: badminton

@@ -1,11 +1,13 @@
 .git
 .github
-node_modules
-dist
+.private
 .env
 .env.*
-.private
+!.env.example
 deploy.curl
+node_modules
+dist
 backups
 *.dump
 *.log
+npm-debug.log*

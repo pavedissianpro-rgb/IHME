@@ -86,3 +86,17 @@ L'interface et l'API sont servies sur la même origine dans Docker. Les routes p
 | `GET` | `/api/stats` | Entraîneur |
 
 L'API crée les tables nécessaires au démarrage. Les réponses aux séances et les noms des membres sont visibles sans compte, conformément au fonctionnement prévu pour le club.
+
+## Démonstration sur le serveur étudiant IHME
+
+Le serveur étudiant est réservé aux **données fictives**. En l’absence des trois variables `ADMIN_EMAIL`, `ADMIN_PASSWORD` et `JWT_SECRET`, l’application démarre en mode démonstration : elle crée des joueurs et des séances explicitement fictifs, permet de tester les réponses, et désactive la connexion et les fonctions de gestion entraîneur. Elle refuse de démarrer en mode démo si la base contient des membres ou des lieux qui ne correspondent pas aux données fictives. N’y importez pas les noms, présences ou coordonnées de vrais membres du club.
+
+Le workflow `.github/workflows/publish.yml` reprend le parcours de publication du dépôt [ihme-suivi](https://github.com/cedrictisseyre/ihme-suivi) :
+
+- Un push sur `main` construit et publie l’image versionnée dans GitHub Container Registry.
+- Pour la publier sur le serveur, lancer ensuite **Actions → Construire et publier l’image → Run workflow**, cocher **Déployer cette version après construction**, puis valider. La construction seule ne change pas la version en ligne.
+- L’image utilise le dépôt `ghcr.io/pavedissianpro-rgb/ihme` ; il doit être autorisé dans l’affectation du serveur.
+- Configurer dans les paramètres **du dépôt de cette application** la variable `IHME_DEPLOY_URL` (URL HTTPS fournie par l’enseignant, chemin `/__deploy/pNN`), le secret `IHME_DEPLOY_TOKEN` attribué au projet et, si nécessaire, la variable `IHME_BASE_PATH` (chemin public avec `/` initiale et finale, par exemple `/mon-projet/`). Ces valeurs privées ne doivent pas être ajoutées au code.
+- Le serveur injecte `DATABASE_URL`, `PUBLIC_ORIGIN` et `BASE_PATH`, exécute l’application sous un compte sans privilèges, vérifie `/api/health` et limite la taille du pool PostgreSQL.
+
+Le build local du frontend prend également en charge le chemin `BASE_PATH`. L’application et ses appels API sont servis sur le port 3000 par une seule image, conformément au contrat de déploiement étudiant.

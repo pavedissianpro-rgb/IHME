@@ -9,13 +9,14 @@ const statuses = [
 
 const dateLabel = (value) => new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" }).format(new Date(value));
 const timeLabel = (value) => new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+const apiBase = `${import.meta.env.BASE_URL}api`;
 const localInputValue = (date = new Date()) => {
   const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
   return shifted.toISOString().slice(0, 16);
 };
 
 async function api(path, options = {}) {
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(`${apiBase}${path}`, {
     ...options,
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...options.headers },
@@ -31,6 +32,7 @@ function App() {
   const [sessions, setSessions] = useState([]);
   const [members, setMembers] = useState([]);
   const [coach, setCoach] = useState(null);
+  const [demoMode, setDemoMode] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -57,6 +59,12 @@ function App() {
 
   const loadCoachData = useCallback(async () => {
     try {
+      const { demoMode: isDemo } = await api("/config");
+      setDemoMode(isDemo);
+      if (isDemo) {
+        setCoach(null);
+        return;
+      }
       const { coach: currentCoach } = await api("/auth/me");
       setCoach(currentCoach);
     } catch (requestError) {
@@ -224,7 +232,9 @@ function App() {
         </a>
         <div className="top-actions">
           <span className="club-status"><i /> Club ouvert</span>
-          {coach
+          {demoMode
+            ? <span className="demo-badge">Démo · données fictives</span>
+            : coach
             ? <button className="text-button" onClick={logout}><LogOut size={16} /> Déconnexion</button>
             : <button className="coach-button" onClick={() => setLoginOpen(true)}><ShieldCheck size={16} /> Espace entraîneur</button>}
         </div>
@@ -329,7 +339,7 @@ function App() {
           </div>}
         </section>}
 
-        <section className="bottom-note"><div className="note-icon"><Users size={18} /></div><p>Une question sur les séances ?<br /><span>Rapprochez-vous de l’entraîneur au prochain entraînement.</span></p><ArrowUpRight size={18} /></section>
+        <section className="bottom-note"><div className="note-icon"><Users size={18} /></div><p>{demoMode ? <>Démonstration avec des joueurs fictifs.<br /><span>N’utilisez aucune donnée réelle de membre sur cet hébergement.</span></> : <>Une question sur les séances ?<br /><span>Rapprochez-vous de l’entraîneur au prochain entraînement.</span></>}</p><ArrowUpRight size={18} /></section>
       </main>
       <footer><span>volant<span className="brand-dot">.</span> <small>LE PLAISIR DE JOUER ENSEMBLE</small></span><span>© {new Date().getFullYear()} — Votre club de badminton</span></footer>
 

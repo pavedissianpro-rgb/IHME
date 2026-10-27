@@ -2,6 +2,9 @@ import "dotenv/config";
 import bcrypt from "bcryptjs";
 import cookieParser from "cookie-parser";
 import express from "express";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { rateLimit } from "express-rate-limit";
 import helmet from "helmet";
 import jwt from "jsonwebtoken";
@@ -10,14 +13,23 @@ import { initializeDatabase, pool } from "./db.js";
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const cookieName = "badminton_coach";
+const demoMode = !process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD || !process.env.JWT_SECRET;
+const frontendDirectory = fileURLToPath(new URL("../../frontend/dist/", import.meta.url));
 const responses = new Set(["present", "absent", "maybe"]);
 
 if ((!process.env.DATABASE_URL && !(process.env.PGHOST && process.env.PGUSER && process.env.PGPASSWORD)) ||
-    !process.env.JWT_SECRET || !process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD) {
-  throw new Error("Configurez DATABASE_URL (ou PGHOST, PGUSER et PGPASSWORD), JWT_SECRET, ADMIN_EMAIL et ADMIN_PASSWORD.");
+    (process.env.NODE_ENV === "production" && !process.env.PUBLIC_ORIGIN) ||
+    ([process.env.ADMIN_EMAIL, process.env.ADMIN_PASSWORD, process.env.JWT_SECRET].some(Boolean) && demoMode)) {
+  throw new Error("Configurez la base de données, PUBLIC_ORIGIN en production, et les trois identifiants entraîneur ensemble.");
 }
-if (process.env.JWT_SECRET.length < 32) {
+if (!demoMode && process.env.JWT_SECRET.length < 32) {
   throw new Error("JWT_SECRET doit contenir au moins 32 caractères.");
+}
+if (process.env.PUBLIC_ORIGIN) {
+  const origin = new URL(process.env.PUBLIC_ORIGIN);
+  if (!["http:", "https:"].includes(origin.protocol) || origin.origin !== process.env.PUBLIC_ORIGIN) {
+    throw new Error("PUBLIC_ORIGIN doit être une origine HTTP(S) sans chemin.");
+  }
 }
 
 app.disable("x-powered-by");
@@ -38,6 +50,7 @@ function asyncRoute(handler) {
 }
 
 function requireCoach(req, res, next) {
+  if (demoMode) return res.status(403).json({ error: "La gestion entraîneur est désactivée sur la démonstration." });
   const token = req.cookies[cookieName];
   if (!token) return res.status(401).json({ error: "Connexion entraîneur requise." });
 
@@ -58,9 +71,15 @@ function validLocation(value) {
   return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 160;
 }
 
-app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
+app.get("/api/health", asyncRoute(async (_req, res) => {
+  await pool.query("SELECT 1");
+  res.json({ status: "ok", version: process.env.APP_VERSION || "local" });
+}));
+
+app.get("/api/config", (_req, res) => res.json({ demoMode }));
 
 app.post("/api/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false }), asyncRoute(async (req, res) => {
+  if (demoMode) return res.status(403).json({ error: "La connexion entraîneur est désactivée sur la démonstration." });
   const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
   const password = typeof req.body.password === "string" ? req.body.password : "";
   const result = await pool.query("SELECT id, email, password_hash FROM coaches WHERE email = $1", [email]);
@@ -74,13 +93,14 @@ app.post("/api/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, sta
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
+    path: process.env.BASE_PATH || "/",
     maxAge: 12 * 60 * 60 * 1000
   });
   return res.json({ coach: { email: coach.email } });
 }));
 
 app.post("/api/auth/logout", (_req, res) => {
-  res.clearCookie(cookieName, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" });
+  res.clearCookie(cookieName, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: process.env.BASE_PATH || "/" });
   res.status(204).end();
 });
 
@@ -221,7 +241,16 @@ app.get("/api/stats", requireCoach, asyncRoute(async (_req, res) => {
   res.json({ summary: summary.rows[0], members: members.rows });
 }));
 
-app.use((req, res) => res.status(404).json({ error: "Route introuvable." }));
+if (existsSync(frontendDirectory)) {
+  app.use(express.static(frontendDirectory, { index: false, maxAge: "1h" }));
+}
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Route introuvable." });
+  if (!existsSync(path.join(frontendDirectory, "index.html"))) return res.status(404).json({ error: "Route introuvable." });
+  res.sendFile(path.join(frontendDirectory, "index.html"), (error) => {
+    if (error) next(error);
+  });
+});
 app.use((error, _req, res, _next) => {
   console.error(error);
   if (res.headersSent) return;
@@ -231,13 +260,15 @@ app.use((error, _req, res, _next) => {
 });
 
 async function start() {
-  await initializeDatabase();
-  const email = process.env.ADMIN_EMAIL.trim().toLowerCase();
-  const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
-  await pool.query(
-    "INSERT INTO coaches (email, password_hash) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING",
-    [email, passwordHash]
-  );
+  await initializeDatabase({ seedDemo: demoMode });
+  if (!demoMode) {
+    const email = process.env.ADMIN_EMAIL.trim().toLowerCase();
+    const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
+    await pool.query(
+      "INSERT INTO coaches (email, password_hash) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING",
+      [email, passwordHash]
+    );
+  }
   app.listen(port, "0.0.0.0", () => console.log(`API Badminton Club démarrée sur le port ${port}.`));
 }
 

@@ -1,18 +1,20 @@
-# Exemple pour un projet avec package.json, src/, index.html et server/ à la racine.
-FROM node:24-bookworm-slim AS build
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
+FROM node:24-alpine AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/index.html frontend/vite.config.js ./
+COPY frontend/src ./src
 ARG BASE_PATH=/
 RUN npm run build -- --base="${BASE_PATH}"
-FROM node:24-bookworm-slim
-ENV NODE_ENV=production PORT=3000
+
+FROM node:24-alpine
+ENV NODE_ENV=production
+ENV PORT=3000
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
-COPY --chown=node:node server ./server
-COPY --from=build --chown=node:node /app/dist ./dist
-USER node
+COPY backend/package*.json ./backend/
+RUN npm install --omit=dev --prefix ./backend
+COPY backend/src ./backend/src
+COPY --from=frontend-build --chown=node:node /app/frontend/dist ./frontend/dist
 EXPOSE 3000
-CMD ["node", "server/index.js"]
+USER node
+CMD ["node", "backend/src/server.js"]
