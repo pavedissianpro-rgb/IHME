@@ -1,92 +1,85 @@
 # Badminton Club
 
-## Presentation du projet
-
-Badminton Club est une application web destinee à faciliter l'organisation des séances d'un club de badminton.
-
-Elle permet aux membres de consulter les prochaines séances et d'indiquer s'ils seront présents, absents ou incertains.
-
-L'objectif est de simplifier la gestion des présences et d'améliorer l'organisation du club.
+Application web pour organiser les séances d'un club de badminton et gérer les réponses de présence des membres.
 
 ## Objectifs
 
-- Faciliter la gestion des présences.
-- Centraliser les informations des séances.
-- Permettre aux joueurs de consulter les participants.
-- Simplifier le travail des responsables du club.
+- Consulter les prochaines séances du club.
+- Répondre présent, absent ou incertain pour une séance.
+- Voir les membres inscrits à chaque séance.
+- Permettre aux responsables de créer et modifier des séances.
+- Consulter des statistiques de participation.
 
-## Fonctionnalités prévues
+## Technologies
 
-- [ ] Afficher les prochaines séances.
-- [ ] Indiquer sa présence à une séance.
-- [ ] Indiquer son absence.
-- [ ] Indiquer une réponse incertaine.
-- [ ] Consulter la liste des participants.
-- [ ] Créer et modifier des séances.
-- [ ] Ajouter un système de connexion.
-- [ ] Créer un espace administrateur.
-- [ ] Ajouter des statistiques de participation.
+- **Frontend :** React
+- **Backend :** Node.js avec Express
+- **Base de données :** PostgreSQL
+- **Conteneurisation :** Docker et Docker Compose
 
-## Technologies utilisées
+L'application est destinée à un seul club. Le frontend communique avec le backend via une API HTTP. Le backend gère les règles de l'application et l'accès à PostgreSQL. Les identifiants de la base de données sont fournis par des variables d'environnement et ne doivent pas être enregistrés dans Git.
 
-- HTML
-- CSS
-- JavaScript
-- React
-- Vite
-- Supabase
-- Git
-- GitHub
+## Architecture envisagée
 
-## Installation du projet
+```text
+badminton-club/
+├── frontend/           # Application React
+├── backend/            # API Node.js et Express
+├── docker-compose.yml  # Services de l'application et de PostgreSQL
+├── .env.example        # Exemple de configuration locale
+├── .gitignore
+└── README.md
+```
 
-### Prérequis
+Les dossiers et fichiers seront ajoutés au fur et à mesure du développement. Cette structure est une proposition de départ.
 
-- Node.js
-- npm
-- Git
+## Fonctionnalités
 
-### Installation
+### Pour les membres
+- Consulter les séances à venir, avec leur date, leur horaire et leur lieu.
+- Accéder à l'application sans créer de compte.
+- Choisir leur nom dans la liste des membres et indiquer leur réponse : présent, absent ou incertain.
+- Consulter la liste des participants.
 
-Cloner le dépôt :
+### Pour l'entraîneur
+- Créer, modifier et supprimer une séance.
+- Consulter les réponses des membres.
+- Accéder aux statistiques de participation.
+- Se connecter à un espace protégé pour gérer les séances.
 
-    git clone ADRESSE_DU_DEPOT
+### À définir
+- Besoin éventuel de récupérer le mot de passe de l'entraîneur.
 
-Accéder au dossier :
+## Démarrage avec Docker
 
-    cd badminton-club
+Une fois `docker-compose.yml` et les fichiers de configuration créés, les services pourront être lancés depuis la racine du projet avec :
 
-Installer les dépendances :
+```bash
+docker compose up --build
+```
 
-    npm install
+Pour arrêter les services :
 
-Lancer l'application :
+```bash
+docker compose down
+```
 
-    npm run dev
+Les ports de l'application et de l'API, ainsi que les variables d'environnement nécessaires, seront documentés ici lorsqu'ils seront définis. Ne placez pas de vrais mots de passe dans le fichier `.env.example`.
 
-L'adresse locale sera indiquée dans le terminal.
+## Développement sans Docker
 
-## Structure du projet
-
-    badminton-club/
-    ├── public/
-    ├── src/
-    │   ├── App.jsx
-    │   ├── App.css
-    │   ├── index.css
-    │   └── main.jsx
-    ├── package.json
-    └── README.md
+Les commandes de lancement dépendront des scripts définis dans les projets React et Express. Le démarrage local du frontend, du backend et de PostgreSQL sera précisé après la création de ces projets.
 
 ## État du projet
 
-Projet en cours de développement.
+Projet en cours de définition. Les fonctionnalités ci-dessus décrivent le périmètre envisagé ; elles ne sont pas nécessairement déjà implémentées. Une première étape de réalisation peut être la mise en place de l'API Express, de la base PostgreSQL et de l'application React dans Docker Compose.
 
-La première étape consiste à créer l'interface des séances.
-Les fonctionnalités de connexion et de gestion des présences
-seront développées progressivement.
+## Informations complémentaires
 
-## Auteur
+Les choix suivants sont retenus :
 
-Projet développé dans le cadre de la création d'une
-application web pour un club de badminton.
+- L'application gère un seul club.
+- Les membres utilisent l'application sans compte et choisissent leur nom dans la liste pour répondre à une séance.
+- Seul l'entraîneur peut créer, modifier ou supprimer les séances ; son espace de gestion est protégé par connexion.
+
+Les éventuelles consignes de cours sur les bibliothèques ou l'organisation des dossiers restent à préciser.
