@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowDownRight, ArrowUpRight, CalendarDays, Check, ChevronDown, Clock3, Dumbbell, LogIn, LogOut, MapPin, Plus, ShieldCheck, Trash2, Users, X } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, CalendarDays, Check, ChevronDown, Clock3, LogIn, LogOut, MapPin, Plus, ShieldCheck, Trash2, UserRound, Users, X } from "lucide-react";
 
 const statuses = [
   { value: "present", label: "Présent", className: "yes" },
@@ -7,12 +7,32 @@ const statuses = [
   { value: "absent", label: "Absent", className: "no" }
 ];
 
-const dateLabel = (value) => new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" }).format(new Date(value));
-const timeLabel = (value) => new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+const dateLabel = (value, timezone = "Europe/Paris") => new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long", timeZone: timezone }).format(new Date(value));
+const timeLabel = (value, timezone = "Europe/Paris") => new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: timezone }).format(new Date(value));
 const apiBase = `${import.meta.env.BASE_URL}api`;
-const localInputValue = (date = new Date()) => {
-  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return shifted.toISOString().slice(0, 16);
+const zonedDateParts = (date, timezone) => new Intl.DateTimeFormat("en-CA", {
+  timeZone: timezone,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23"
+}).formatToParts(date).reduce((parts, part) => ({ ...parts, [part.type]: part.value }), {});
+
+const localInputValue = (date, timezone) => {
+  const parts = zonedDateParts(date, timezone);
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+};
+
+const localDateTimeToIso = (value, timezone) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) throw new Error("Choisissez une date et une heure valides.");
+  const [, year, month, day, hour, minute] = match;
+  const targetUtc = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+  const zoned = zonedDateParts(new Date(targetUtc), timezone);
+  const displayedUtc = Date.UTC(Number(zoned.year), Number(zoned.month) - 1, Number(zoned.day), Number(zoned.hour), Number(zoned.minute));
+  return new Date(targetUtc - (displayedUtc - targetUtc)).toISOString();
 };
 
 async function api(path, options = {}) {
@@ -28,11 +48,28 @@ async function api(path, options = {}) {
   return payload;
 }
 
+function BadmintonMark({ size = 24 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <g stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+        <ellipse cx="22" cy="27" rx="11" ry="15" transform="rotate(35 22 27)" strokeWidth="2.8" />
+        <path d="m29 38 14 14m-17-12 13-11M18 15l13 22m-14-13 18 11m-20-3 15 9" strokeWidth="1.5" />
+        <path d="m40 10 14 6-7 16-8-1-5-7 6-14Z" fill="currentColor" fillOpacity=".16" strokeWidth="2.5" />
+        <path d="m40 10 7 22m7-16-20 8" strokeWidth="1.5" />
+        <path d="m43 52 8 7" strokeWidth="4" />
+      </g>
+      <circle cx="40" cy="10" r="3" fill="currentColor" />
+    </svg>
+  );
+}
+
 function App() {
   const [sessions, setSessions] = useState([]);
   const [members, setMembers] = useState([]);
   const [coach, setCoach] = useState(null);
   const [demoMode, setDemoMode] = useState(false);
+  const [allowRealNames, setAllowRealNames] = useState(false);
+  const [timezone, setTimezone] = useState("Europe/Paris");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -44,23 +81,24 @@ function App() {
   const [expandedSession, setExpandedSession] = useState(null);
   const [stats, setStats] = useState(null);
   const [editingId, setEditingId] = useState(null);
-  const [sessionForm, setSessionForm] = useState({ startsAt: "", endsAt: "", location: "" });
+  const [sessionForm, setSessionForm] = useState({ startsAt: "", endsAt: "", location: "", coach: "" });
   const [memberName, setMemberName] = useState("");
+  const [newMemberName, setNewMemberName] = useState("");
   const [loginOpen, setLoginOpen] = useState(false);
 
   const loadPublicData = useCallback(async () => {
     const [sessionData, memberData] = await Promise.all([api("/sessions"), api("/members")]);
     setSessions(sessionData.sessions);
     setMembers(memberData.members);
-    setSelectedMember((current) => current && memberData.members.some((member) => String(member.id) === current)
-      ? current
-      : String(memberData.members[0]?.id || ""));
+    setSelectedMember((current) => current && memberData.members.some((member) => String(member.id) === current) ? current : "");
   }, []);
 
   const loadCoachData = useCallback(async () => {
     try {
-      const { demoMode: isDemo } = await api("/config");
+      const { demoMode: isDemo, allowRealNames: canRegisterNames, timezone: clubTimezone } = await api("/config");
       setDemoMode(isDemo);
+      setAllowRealNames(canRegisterNames);
+      setTimezone(clubTimezone);
       if (isDemo) {
         setCoach(null);
         return;
@@ -105,7 +143,7 @@ function App() {
     setError("");
     try {
       await api(`/sessions/${sessionId}/attendance`, { method: "PUT", body: { memberId: Number(selectedMember), response } });
-      setResponsesBySession((current) => ({ ...current, [sessionId]: response }));
+      setResponsesBySession((current) => ({ ...current, [`${sessionId}:${selectedMember}`]: response }));
       setNotice("Votre réponse a bien été enregistrée.");
       await loadPublicData();
     } catch (requestError) {
@@ -141,7 +179,7 @@ function App() {
 
   function prepareEdit(session) {
     setEditingId(session.id);
-    setSessionForm({ startsAt: localInputValue(new Date(session.starts_at)), endsAt: localInputValue(new Date(session.ends_at)), location: session.location });
+    setSessionForm({ startsAt: localInputValue(new Date(session.starts_at), timezone), endsAt: localInputValue(new Date(session.ends_at), timezone), location: session.location, coach: session.coach });
   }
 
   async function saveSession(event) {
@@ -151,12 +189,12 @@ function App() {
       const path = editingId ? `/sessions/${editingId}` : "/sessions";
       const body = {
         ...sessionForm,
-        startsAt: new Date(sessionForm.startsAt).toISOString(),
-        endsAt: new Date(sessionForm.endsAt).toISOString()
+        startsAt: localDateTimeToIso(sessionForm.startsAt, timezone),
+        endsAt: localDateTimeToIso(sessionForm.endsAt, timezone)
       };
       await api(path, { method: editingId ? "PATCH" : "POST", body });
       setEditingId(null);
-      setSessionForm({ startsAt: "", endsAt: "", location: "" });
+      setSessionForm({ startsAt: "", endsAt: "", location: "", coach: "" });
       setNotice(editingId ? "Séance modifiée." : "Nouvelle séance créée.");
       await loadPublicData();
     } catch (requestError) {
@@ -182,6 +220,21 @@ function App() {
       setMemberName("");
       setNotice("Membre ajouté.");
       await loadPublicData();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function registerMember(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const { member } = await api("/members/register", { method: "POST", body: { name: newMemberName } });
+      setNewMemberName("");
+      setSelectedMember(String(member.id));
+      setNotice(`Bienvenue ${member.name} ! Choisissez votre réponse pour les séances.`);
+      await loadPublicData();
+      setSelectedMember(String(member.id));
     } catch (requestError) {
       setError(requestError.message);
     }
@@ -227,7 +280,7 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <a className="brand" href="#" onClick={() => setActiveTab("sessions")}>
-          <span className="brand-mark"><Dumbbell size={19} strokeWidth={2.2} /></span>
+          <span className="brand-mark"><BadmintonMark size={24} /></span>
           <span>volant<span className="brand-dot">.</span><small>CLUB DE BADMINTON</small></span>
         </a>
         <div className="top-actions">
@@ -250,7 +303,7 @@ function App() {
           </div>
           <div className="hero-art" aria-hidden="true">
             <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-            <div className="hero-circle"><Dumbbell size={76} strokeWidth={1.3} /></div>
+            <div className="hero-circle"><BadmintonMark size={78} /></div>
             <span className="float-tag tag-one"><span className="mini-dot" /> On joue ?</span>
             <span className="float-tag tag-two"><Users size={15} /> Tous niveaux</span>
             <span className="hero-spark">✳</span>
@@ -267,21 +320,27 @@ function App() {
               <span>Je suis</span>
               <label className="select-wrap">
                 <select value={selectedMember} onChange={(event) => setSelectedMember(event.target.value)} aria-label="Choisir votre nom">
-                  {!members.length && <option value="">Aucun membre</option>}
+                  <option value="">Choisir mon nom</option>
                   {members.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}
                 </select>
                 <ChevronDown size={15} />
               </label>
             </div>
           </div>
+          {allowRealNames && <form className="self-register-form" onSubmit={registerMember}>
+            <span>Pas encore dans la liste ? Votre nom sera visible par les autres membres avec votre réponse.</span>
+            <input value={newMemberName} maxLength="100" autoComplete="name" placeholder="Saisissez votre prénom et nom" required onChange={(event) => setNewMemberName(event.target.value)} />
+            <button type="submit">M’inscrire <Plus size={15} /></button>
+          </form>}
 
           {upcoming.length ? <div className="session-grid">
             {upcoming.map((session, index) => <article className="session-card" key={session.id}>
               <div className={`card-accent accent-${index % 3}`} />
               <div className="session-topline"><span className="session-kicker"><CalendarDays size={14} /> SÉANCE CLUB</span><span className="session-index">N° {String(index + 1).padStart(2, "0")}</span></div>
-              <h3>{dateLabel(session.starts_at)}</h3>
-              <div className="session-detail"><Clock3 size={15} /><span>{timeLabel(session.starts_at)} — {timeLabel(session.ends_at)}</span></div>
+              <h3>{dateLabel(session.starts_at, timezone)}</h3>
+              <div className="session-detail"><Clock3 size={15} /><span>{timeLabel(session.starts_at, timezone)} — {timeLabel(session.ends_at, timezone)}</span></div>
               <div className="session-detail"><MapPin size={15} /><span>{session.location}</span></div>
+              <div className="session-detail"><UserRound size={15} /><span>{session.coach}</span></div>
               <div className="attendance-counts">
                 <span className="count-yes"><i /> {session.present_count} présent{session.present_count > 1 ? "s" : ""}</span>
                 <span className="count-maybe">{session.maybe_count} incertain{session.maybe_count > 1 ? "s" : ""}</span>
@@ -295,7 +354,7 @@ function App() {
               <div className="response-divider" />
               <p className="response-label">Tu viens ?</p>
               <div className="response-actions">
-                {statuses.map((status) => <button key={status.value} className={`response-button ${status.className} ${responsesBySession[session.id] === status.value ? "selected" : ""}`} onClick={() => submitResponse(session.id, status.value)} disabled={!members.length}>{status.label}</button>)}
+                {statuses.map((status) => <button key={status.value} className={`response-button ${status.className} ${responsesBySession[`${session.id}:${selectedMember}`] === status.value ? "selected" : ""}`} onClick={() => submitResponse(session.id, status.value)} disabled={!selectedMember}>{status.label}</button>)}
               </div>
               {coach && <div className="card-admin-actions"><button onClick={() => prepareEdit(session)}>Modifier</button><button onClick={() => removeSession(session.id)}>Supprimer</button></div>}
             </article>)}
@@ -325,7 +384,8 @@ function App() {
                 <label>Date et heure de début<input type="datetime-local" value={sessionForm.startsAt} required onChange={(e) => setSessionForm({ ...sessionForm, startsAt: e.target.value })} /></label>
                 <label>Date et heure de fin<input type="datetime-local" value={sessionForm.endsAt} required onChange={(e) => setSessionForm({ ...sessionForm, endsAt: e.target.value })} /></label>
                 <label>Lieu<input value={sessionForm.location} maxLength="160" placeholder="Ex. Gymnase municipal" required onChange={(e) => setSessionForm({ ...sessionForm, location: e.target.value })} /></label>
-                <div className="form-actions"><button className="primary-button" type="submit">{editingId ? "Enregistrer" : "Créer la séance"} <Plus size={15} /></button>{editingId && <button className="cancel-button" type="button" onClick={() => { setEditingId(null); setSessionForm({ startsAt: "", endsAt: "", location: "" }); }}>Annuler</button>}</div>
+                <label>Entraîneur<input value={sessionForm.coach} maxLength="100" placeholder="Nom de l’entraîneur" required onChange={(e) => setSessionForm({ ...sessionForm, coach: e.target.value })} /></label>
+                <div className="form-actions"><button className="primary-button" type="submit">{editingId ? "Enregistrer" : "Créer la séance"} <Plus size={15} /></button>{editingId && <button className="cancel-button" type="button" onClick={() => { setEditingId(null); setSessionForm({ startsAt: "", endsAt: "", location: "", coach: "" }); }}>Annuler</button>}</div>
               </form>
             </div>
             <div className="manage-box">
@@ -333,7 +393,7 @@ function App() {
               <form className="member-form" onSubmit={addMember}><input value={memberName} maxLength="100" placeholder="Nom du membre" required onChange={(e) => setMemberName(e.target.value)} /><button className="add-button" aria-label="Ajouter un membre"><Plus size={18} /></button></form>
               {members.length ? <div className="member-list">{members.map((member) => <div className="member-row" key={member.id}><span className="avatar">{member.name.trim().charAt(0).toUpperCase()}</span><span>{member.name}</span><button aria-label={`Supprimer ${member.name}`} onClick={() => removeMember(member.id, member.name)}><Trash2 size={15} /></button></div>)}</div> : <p className="subtle-text">Ajoutez des membres pour qu’ils puissent répondre aux séances.</p>}
               <h3 className="attendance-title">Réponses à une séance</h3>
-              {sessions.length ? <label className="attendance-select">Choisir une séance<select onChange={(e) => showAttendance(e.target.value)} defaultValue={sessions[0].id}>{sessions.map((session) => <option key={session.id} value={session.id}>{dateLabel(session.starts_at)} · {session.location}</option>)}</select></label> : <p className="subtle-text">Aucune séance à afficher.</p>}
+              {sessions.length ? <label className="attendance-select">Choisir une séance<select onChange={(e) => showAttendance(e.target.value)} defaultValue={sessions[0].id}>{sessions.map((session) => <option key={session.id} value={session.id}>{dateLabel(session.starts_at, timezone)} · {session.coach}</option>)}</select></label> : <p className="subtle-text">Aucune séance à afficher.</p>}
               {attendance.map((person) => <div className="attendance-row" key={person.id}><span>{person.name}</span><span className={`status-chip ${person.response || "unanswered"}`}>{person.response ? statuses.find((item) => item.value === person.response)?.label : "Sans réponse"}</span></div>)}
             </div>
           </div>}

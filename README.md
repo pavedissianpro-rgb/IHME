@@ -5,7 +5,9 @@ Application web pour organiser les séances d'un club de badminton et gérer les
 ## Fonctionnalités
 
 - Calendrier des séances à venir avec horaires, lieu et décompte des réponses.
-- Réponse sans compte par sélection du nom : présent, absent ou peut-être.
+- Réponse par sélection du nom : présent, absent ou peut-être.
+- Inscription par son nom activable uniquement sur un hébergement privé du club.
+- Séances récurrentes le mardi (19 h–21 h), jeudi (19 h–21 h) et vendredi (19 h–20 h), générées jusqu’à 14 jours à l’avance.
 - Consultation des réponses des membres pour chaque séance.
 - Espace entraîneur protégé par mot de passe : création, modification et suppression des séances et des membres.
 - Statistiques des séances passées et des présences par membre.
@@ -35,6 +37,10 @@ docker compose down
 Les données PostgreSQL sont conservées dans le volume `postgres_data`. Pour arrêter les services sans perdre les données, ne supprimez pas ce volume. La suppression des données (`docker compose down -v`) est irréversible.
 
 Le compte entraîneur est créé au premier démarrage. `ADMIN_EMAIL` et `ADMIN_PASSWORD` sont des identifiants d'initialisation : modifier ces variables après la création du compte ne change pas le mot de passe déjà enregistré.
+
+Configurez dans `.env` les variables du club et du planning (`CLUB_LOCATION`, `CLUB_TIMEZONE`, `CLUB_TUESDAY_COACH`, `CLUB_THURSDAY_COACH`, `CLUB_FRIDAY_COACH`). Les séances sont créées dans le fuseau indiqué, par défaut `Europe/Paris`, puis complétées automatiquement au démarrage et toutes les heures pour conserver un horizon de deux semaines. Les séances déjà modifiées manuellement ne sont pas écrasées.
+
+Pour permettre aux joueurs de s’inscrire eux-mêmes par leur vrai nom, configurez `ALLOW_REAL_NAMES=true` uniquement sur un hébergement privé du club avec HTTPS et les identifiants entraîneur. Renseignez également les noms des entraîneurs dans les variables du club. Les noms et les réponses sont visibles par les autres visiteurs ; les joueurs choisissent leur propre nom sans compte ni vérification d’identité. Cette option ne doit pas être activée sur le serveur IHME partagé.
 
 ## Développement sans Docker
 
@@ -78,6 +84,7 @@ L'interface et l'API sont servies sur la même origine dans Docker. Les routes p
 | `GET` | `/api/sessions/:id/attendance` | Public |
 | `PUT` | `/api/sessions/:id/attendance` | Public |
 | `GET` | `/api/members` | Public |
+| `POST` | `/api/members/register` | Public, si `ALLOW_REAL_NAMES=true` |
 | `POST` | `/api/auth/login` | Public |
 | `POST` | `/api/auth/logout` | Public |
 | `GET` | `/api/auth/me` | Entraîneur |
@@ -89,7 +96,7 @@ L'API crée les tables nécessaires au démarrage. Les réponses aux séances et
 
 ## Démonstration sur le serveur étudiant IHME
 
-Le serveur étudiant est réservé aux **données fictives**. En l’absence des trois variables `ADMIN_EMAIL`, `ADMIN_PASSWORD` et `JWT_SECRET`, l’application démarre en mode démonstration : elle crée des joueurs et des séances explicitement fictifs, permet de tester les réponses, et désactive la connexion et les fonctions de gestion entraîneur. Elle refuse de démarrer en mode démo si la base contient des membres ou des lieux qui ne correspondent pas aux données fictives. N’y importez pas les noms, présences ou coordonnées de vrais membres du club.
+Le serveur étudiant est réservé aux **données fictives**. En l’absence des trois variables `ADMIN_EMAIL`, `ADMIN_PASSWORD` et `JWT_SECRET`, l’application démarre en mode démonstration : elle crée des joueurs et des séances explicitement fictifs pour les trois jours hebdomadaires, permet de tester les réponses, et désactive les inscriptions, la connexion et les fonctions de gestion entraîneur. Elle refuse de démarrer en mode démo si la base contient des membres ou des lieux qui ne correspondent pas aux données fictives. N’y importez pas les noms, présences ou coordonnées de vrais membres du club.
 
 Le workflow `.github/workflows/publish.yml` reprend le parcours de publication du dépôt [ihme-suivi](https://github.com/cedrictisseyre/ihme-suivi) :
 
@@ -98,5 +105,6 @@ Le workflow `.github/workflows/publish.yml` reprend le parcours de publication d
 - L’image utilise le dépôt `ghcr.io/pavedissianpro-rgb/ihme` ; il doit être autorisé dans l’affectation du serveur.
 - Configurer dans les paramètres **du dépôt de cette application** la variable `IHME_DEPLOY_URL` (URL HTTPS fournie par l’enseignant, chemin `/__deploy/pNN`), le secret `IHME_DEPLOY_TOKEN` attribué au projet et, si nécessaire, la variable `IHME_BASE_PATH` (chemin public avec `/` initiale et finale, par exemple `/mon-projet/`). Ces valeurs privées ne doivent pas être ajoutées au code.
 - Le serveur injecte `DATABASE_URL`, `PUBLIC_ORIGIN` et `BASE_PATH`, exécute l’application sous un compte sans privilèges, vérifie `/api/health` et limite la taille du pool PostgreSQL.
+- L’hébergement étudiant ne permet pas de configurer les entraîneurs et le lieu réels du club. Ne déployez pas les noms des entraîneurs ni les données nominatives des joueurs sur cette démonstration ; utilisez un hébergement privé séparé et configurez-y les variables du club.
 
 Le build local du frontend prend également en charge le chemin `BASE_PATH`. L’application et ses appels API sont servis sur le port 3000 par une seule image, conformément au contrat de déploiement étudiant.

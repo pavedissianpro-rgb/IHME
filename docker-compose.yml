@@ -21,6 +21,12 @@ services:
       NODE_ENV: production
       PORT: 3000
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost}
+      ALLOW_REAL_NAMES: ${ALLOW_REAL_NAMES:-false}
+      CLUB_TIMEZONE: ${CLUB_TIMEZONE:-Europe/Paris}
+      CLUB_LOCATION: ${CLUB_LOCATION:-Pillon}
+      CLUB_TUESDAY_COACH: ${CLUB_TUESDAY_COACH:-}
+      CLUB_THURSDAY_COACH: ${CLUB_THURSDAY_COACH:-}
+      CLUB_FRIDAY_COACH: ${CLUB_FRIDAY_COACH:-}
       PGHOST: database
       PGPORT: 5432
       PGDATABASE: badminton

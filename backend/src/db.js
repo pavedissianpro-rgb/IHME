@@ -34,9 +34,15 @@ export async function initializeDatabase({ seedDemo = false } = {}) {
       starts_at TIMESTAMPTZ NOT NULL,
       ends_at TIMESTAMPTZ NOT NULL,
       location TEXT NOT NULL,
+      coach TEXT NOT NULL DEFAULT 'Entraîneur démo',
+      is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
+      is_cancelled BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CONSTRAINT sessions_valid_time CHECK (ends_at > starts_at)
     );
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coach TEXT NOT NULL DEFAULT 'Entraîneur démo';
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_recurring BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN NOT NULL DEFAULT FALSE;
     CREATE TABLE IF NOT EXISTS attendance (
       session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
@@ -48,57 +54,75 @@ export async function initializeDatabase({ seedDemo = false } = {}) {
     CREATE INDEX IF NOT EXISTS attendance_member_idx ON attendance(member_id);
   `);
 
-  if (!seedDemo) return;
+  if (seedDemo) await ensureDemoMembers();
+  await ensureUpcomingSessions({ seedDemo });
+  if (seedDemo) await seedDemoAttendance();
+}
+
+export async function ensureUpcomingSessions({ seedDemo = false } = {}) {
+  const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
+  const location = seedDemo ? "Gymnase de démonstration" : (process.env.CLUB_LOCATION || "Pillon");
+  const schedule = seedDemo
+    ? ["Entraîneur démo", "Entraîneur démo", "Entraîneur démo"]
+    : [
+        process.env.CLUB_TUESDAY_COACH || "Entraîneur",
+        process.env.CLUB_THURSDAY_COACH || "Entraîneur",
+        process.env.CLUB_FRIDAY_COACH || "Entraîneur"
+      ];
+
+  try {
+    new Intl.DateTimeFormat("fr-FR", { timeZone: timezone });
+  } catch {
+    throw new Error("CLUB_TIMEZONE doit être un fuseau horaire IANA valide.");
+  }
+  if (!seedDemo && process.env.ALLOW_REAL_NAMES === "true" &&
+      [process.env.CLUB_TUESDAY_COACH, process.env.CLUB_THURSDAY_COACH, process.env.CLUB_FRIDAY_COACH]
+        .some((name) => !name?.trim() || name.trim().length > 100)) {
+    throw new Error("Configurez les trois noms d'entraîneur dans l'environnement privé du club.");
+  }
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(74192831)");
-    const safeDemoData = await client.query(`
-      SELECT
-        NOT EXISTS (SELECT 1 FROM members WHERE name !~ '^Joueur Démo [0-9]{2}$')
-        AND NOT EXISTS (SELECT 1 FROM sessions WHERE location !~ '^Gymnase de démonstration [0-9]+$')
-        AS safe
-    `);
-    if (!safeDemoData.rows[0].safe) {
-      throw new Error("La base contient des données non fictives; refus de démarrer en mode démonstration.");
-    }
-    const existing = await client.query("SELECT EXISTS (SELECT 1 FROM members) OR EXISTS (SELECT 1 FROM sessions) AS has_data");
-    if (existing.rows[0].has_data) {
-      await client.query("COMMIT");
-      return;
-    }
-
-    const names = ["Joueur Démo 01", "Joueur Démo 02", "Joueur Démo 03"];
-    const memberIds = [];
-    for (const name of names) {
-      const result = await client.query("INSERT INTO members (name) VALUES ($1) RETURNING id", [name]);
-      memberIds.push(result.rows[0].id);
-    }
-
-    const sessionIds = [];
-    for (const [index, dayOffset] of [2, 5, 8].entries()) {
-      const startsAt = new Date(Date.now() + dayOffset * 86_400_000);
-      startsAt.setUTCHours(18, 30, 0, 0);
-      const endsAt = new Date(startsAt.getTime() + 90 * 60_000);
-      const result = await client.query(
-        "INSERT INTO sessions (starts_at, ends_at, location) VALUES ($1, $2, $3) RETURNING id",
-        [startsAt, endsAt, `Gymnase de démonstration ${index + 1}`]
-      );
-      sessionIds.push(result.rows[0].id);
-    }
-
-    const sampleResponses = [
-      [sessionIds[0], memberIds[0], "present"],
-      [sessionIds[0], memberIds[1], "maybe"],
-      [sessionIds[1], memberIds[2], "present"]
-    ];
-    for (const [sessionId, memberId, response] of sampleResponses) {
-      await client.query(
-        "INSERT INTO attendance (session_id, member_id, response) VALUES ($1, $2, $3)",
-        [sessionId, memberId, response]
-      );
-    }
+    await client.query(`
+      WITH days AS (
+        SELECT (NOW() AT TIME ZONE $1)::date + day_offset AS local_date
+        FROM generate_series(0, 14) AS offsets(day_offset)
+      ),
+      weekly_schedule(weekday, starts, ends, coach) AS (
+        VALUES
+          (2, TIME '19:00', TIME '21:00', $2::text),
+          (4, TIME '19:00', TIME '21:00', $3::text),
+          (5, TIME '19:00', TIME '20:00', $4::text)
+      ),
+      planned AS (
+        SELECT
+          ((days.local_date + weekly_schedule.starts) AT TIME ZONE $1) AS starts_at,
+          ((days.local_date + weekly_schedule.ends) AT TIME ZONE $1) AS ends_at,
+          weekly_schedule.coach
+        FROM days
+        JOIN weekly_schedule ON EXTRACT(ISODOW FROM days.local_date) = weekly_schedule.weekday
+      ),
+      update_recurring AS (
+        UPDATE sessions existing
+        SET ends_at = planned.ends_at, location = $5, coach = planned.coach
+        FROM planned
+        WHERE existing.starts_at = planned.starts_at
+          AND existing.is_recurring = TRUE
+          AND existing.is_cancelled = FALSE
+        RETURNING existing.id
+      )
+      INSERT INTO sessions (starts_at, ends_at, location, coach, is_recurring)
+      SELECT planned.starts_at, planned.ends_at, $5, planned.coach, TRUE
+      FROM planned
+      WHERE planned.starts_at >= NOW()
+        AND planned.starts_at < NOW() + INTERVAL '14 days'
+        AND NOT EXISTS (
+          SELECT 1 FROM sessions existing
+          WHERE existing.starts_at = planned.starts_at
+        )
+    `, [timezone, ...schedule, location]);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -106,4 +130,59 @@ export async function initializeDatabase({ seedDemo = false } = {}) {
   } finally {
     client.release();
   }
+}
+
+async function ensureDemoMembers() {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(74192832)");
+    const safeDemoData = await client.query(`
+      SELECT
+        NOT EXISTS (SELECT 1 FROM members WHERE name !~ '^Joueur Démo [0-9]{2}$')
+        AND NOT EXISTS (SELECT 1 FROM sessions WHERE location !~ '^Gymnase de démonstration$' AND location !~ '^Gymnase de démonstration [0-9]+$')
+        AND NOT EXISTS (SELECT 1 FROM sessions WHERE coach !~ '^Entraîneur démo$')
+        AS safe
+    `);
+    if (!safeDemoData.rows[0].safe) {
+      throw new Error("La base contient des données non fictives; refus de démarrer en mode démonstration.");
+    }
+
+    await client.query("DELETE FROM sessions WHERE location ~ '^Gymnase de démonstration [0-9]+$'");
+    await client.query(`
+      INSERT INTO members (name)
+      SELECT name FROM unnest(ARRAY['Joueur Démo 01', 'Joueur Démo 02', 'Joueur Démo 03']) AS demo_names(name)
+      ON CONFLICT (name) DO NOTHING
+    `);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function seedDemoAttendance() {
+  await pool.query(`
+    INSERT INTO attendance (session_id, member_id, response)
+    SELECT sessions.id, members.id, demo.response
+    FROM (
+      VALUES
+        (0, 1, 'present'::text),
+        (0, 2, 'maybe'::text),
+        (1, 3, 'present'::text)
+    ) AS demo(session_number, member_number, response)
+    JOIN (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY starts_at) - 1 AS session_number
+      FROM sessions
+      WHERE location = 'Gymnase de démonstration' AND is_cancelled = FALSE AND starts_at >= NOW()
+    ) sessions ON sessions.session_number = demo.session_number
+    JOIN (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY name) AS member_number
+      FROM members
+      WHERE name LIKE 'Joueur Démo %'
+    ) members ON members.member_number = demo.member_number
+    ON CONFLICT (session_id, member_id) DO NOTHING
+  `);
 }

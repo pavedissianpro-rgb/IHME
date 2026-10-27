@@ -3,6 +3,7 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
 COPY frontend/index.html frontend/vite.config.js ./
+COPY frontend/public ./public
 COPY frontend/src ./src
 ARG BASE_PATH=/
 RUN npm run build -- --base="${BASE_PATH}"

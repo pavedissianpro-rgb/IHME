@@ -8,6 +8,7 @@ a{color:inherit;text-decoration:none}
 .topbar{height:88px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
 .brand{display:flex;align-items:center;gap:11px;font:800 21px Manrope,sans-serif;letter-spacing:-1.1px}
 .brand-mark{width:37px;height:37px;display:grid;place-items:center;background:var(--green);color:white;border-radius:12px}
+.brand-mark svg{overflow:visible}
 .brand-dot,.heading-period{color:#82b54a}
 .brand small{display:block;font:600 8px 'DM Sans',sans-serif;letter-spacing:1.55px;color:#89958e;margin-top:1px}
 .top-actions{display:flex;align-items:center;gap:28px}
@@ -26,7 +27,7 @@ main{max-width:1100px;margin:auto}
 .hero-art{width:345px;height:258px;position:relative;display:grid;place-items:center}
 .orbit{position:absolute;border:1px solid #e1e9e1;border-radius:50%;transform:rotate(-25deg)}
 .orbit-one{width:275px;height:206px}.orbit-two{width:210px;height:267px;transform:rotate(35deg)}
-.hero-circle{width:162px;height:162px;background:#e8f0e5;border-radius:50%;display:grid;place-items:center;color:var(--green);position:relative;transform:rotate(-35deg)}
+.hero-circle{width:162px;height:162px;background:#e8f0e5;border-radius:50%;display:grid;place-items:center;color:var(--green);position:relative;transform:rotate(-25deg)}
 .hero-circle:before{content:"";position:absolute;inset:15px;border:1px dashed #a9c5a7;border-radius:50%}
 .float-tag{position:absolute;background:white;border:1px solid var(--line);box-shadow:0 8px 26px #273c2b0d;border-radius:8px;padding:10px 13px;font-size:11px;font-weight:600;display:flex;align-items:center;gap:7px}
 .tag-one{top:28px;left:2px}.tag-two{right:-2px;bottom:32px;color:#55645a}
@@ -35,6 +36,11 @@ main{max-width:1100px;margin:auto}
 .section-heading,.coach-heading{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:25px}
 h2{font:750 27px Manrope,sans-serif;letter-spacing:-1px;margin:9px 0 0}
 .member-picker{display:flex;align-items:center;gap:10px;color:#75817b;font-size:12px}
+.self-register-form{display:flex;align-items:center;justify-content:flex-end;gap:9px;margin:-11px 0 21px;color:#77827c;font-size:10px}
+.self-register-form input{width:min(235px,40vw);padding:9px 11px;border:1px solid #dfe6e1;background:white;border-radius:7px;outline:none;font-size:11px}
+.self-register-form input:focus{border-color:#83ad8c}
+.self-register-form button{display:inline-flex;align-items:center;gap:5px;border:0;border-radius:7px;background:#eaf2e9;color:#376f50;padding:9px 11px;font-size:10px;font-weight:700}
+.self-register-form button:hover{background:#dcebd9}
 .select-wrap{position:relative}
 .select-wrap select{appearance:none;padding:10px 34px 10px 13px;border:1px solid #dfe6e1;background:white;border-radius:8px;color:var(--ink);font-weight:600;min-width:142px}
 .select-wrap svg{position:absolute;right:11px;top:11px;pointer-events:none;color:#718079}
@@ -128,4 +134,4 @@ footer small{font:600 8px 'DM Sans',sans-serif;letter-spacing:1px;color:#9aa49c;
 .loader{width:17px;height:17px;border:2px solid #dce7dc;border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:800px){.app-shell{padding:0 5%}.hero{padding-left:2%;padding-right:2%}.hero-art{width:280px}.session-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.session-grid article:last-child:nth-child(odd){grid-column:1/-1}.stats-content{grid-template-columns:1fr}.manage-grid{grid-template-columns:1fr}}
-@media(max-width:560px){.topbar{height:70px}.brand{font-size:18px}.brand-mark{width:33px;height:33px}.top-actions{gap:10px}.club-status{display:none}.coach-button{padding:9px 10px;font-size:10px}.hero{padding:43px 2% 36px;min-height:auto}.hero h1{font-size:45px;letter-spacing:-2.5px}.hero-copy>p{font-size:12px}.hero-art{width:115px;height:170px;margin-right:-20px;flex-shrink:0}.hero-circle{width:95px;height:95px}.hero-circle svg{width:47px}.orbit-one{width:150px;height:120px}.orbit-two{height:150px;width:110px}.float-tag{font-size:9px;padding:7px}.tag-one{left:-15px;top:9px}.tag-two{right:-8px;bottom:8px}.hero-spark{right:10px;top:4px}.sessions-section,.coach-panel{padding-top:39px;padding-bottom:43px}.section-heading,.coach-heading{align-items:flex-start;gap:15px;flex-direction:column}h2{font-size:23px}.member-picker{align-self:flex-end;margin-top:-3px}.session-grid{grid-template-columns:1fr}.session-grid article:last-child:nth-child(odd){grid-column:auto}.session-card{padding:20px}.manage-box{padding:17px}.session-form{grid-template-columns:1fr}.session-form label:nth-child(3){grid-column:auto}.form-actions{grid-column:auto}.tab-list{align-self:flex-start}.bottom-note{margin-bottom:32px;padding:13px;gap:9px}.bottom-note p{font-size:10px}footer{height:auto;min-height:68px;gap:12px}footer>span:last-child{text-align:right;font-size:9px}footer small{display:block;margin:2px 0 0}.stat-card{padding:13px;min-height:103px}.stat-card strong{right:13px;top:15px}}
+@media(max-width:560px){.topbar{height:70px}.brand{font-size:18px}.brand-mark{width:33px;height:33px}.top-actions{gap:10px}.club-status{display:none}.coach-button{padding:9px 10px;font-size:10px}.hero{padding:43px 2% 36px;min-height:auto}.hero h1{font-size:45px;letter-spacing:-2.5px}.hero-copy>p{font-size:12px}.hero-art{width:115px;height:170px;margin-right:-20px;flex-shrink:0}.hero-circle{width:95px;height:95px}.hero-circle svg{width:56px}.orbit-one{width:150px;height:120px}.orbit-two{height:150px;width:110px}.float-tag{font-size:9px;padding:7px}.tag-one{left:-15px;top:9px}.tag-two{right:-8px;bottom:8px}.hero-spark{right:10px;top:4px}.sessions-section,.coach-panel{padding-top:39px;padding-bottom:43px}.section-heading,.coach-heading{align-items:flex-start;gap:15px;flex-direction:column}h2{font-size:23px}.member-picker{align-self:flex-end;margin-top:-3px}.self-register-form{align-items:stretch;justify-content:initial;flex-wrap:wrap;margin:0 0 18px}.self-register-form>span{width:100%}.self-register-form input{width:auto;min-width:0;flex:1}.session-grid{grid-template-columns:1fr}.session-grid article:last-child:nth-child(odd){grid-column:auto}.session-card{padding:20px}.manage-box{padding:17px}.session-form{grid-template-columns:1fr}.session-form label:nth-child(3){grid-column:auto}.form-actions{grid-column:auto}.tab-list{align-self:flex-start}.bottom-note{margin-bottom:32px;padding:13px;gap:9px}.bottom-note p{font-size:10px}footer{height:auto;min-height:68px;gap:12px}footer>span:last-child{text-align:right;font-size:9px}footer small{display:block;margin:2px 0 0}.stat-card{padding:13px;min-height:103px}.stat-card strong{right:13px;top:15px}}
