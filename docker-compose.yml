@@ -14,38 +14,34 @@ services:
       timeout: 5s
       retries: 10
 
-  backend:
-    build: ./backend
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_PATH: ${BASE_PATH:-/ihme/}
     restart: unless-stopped
     environment:
       NODE_ENV: production
       PORT: 3000
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost}
-      ALLOW_REAL_NAMES: ${ALLOW_REAL_NAMES:-false}
+      BASE_PATH: ${BASE_PATH:-/ihme/}
+      DATABASE_URL: ${DATABASE_URL:?Configurez DATABASE_URL dans .env}
+      COACH_PASSWORD: ${COACH_PASSWORD:-}
       CLUB_TIMEZONE: ${CLUB_TIMEZONE:-Europe/Paris}
-      CLUB_LOCATION: ${CLUB_LOCATION:-Pillon}
+      CLUB_LOCATION: ${CLUB_LOCATION:-Gymnase Pillon}
       CLUB_TUESDAY_COACH: ${CLUB_TUESDAY_COACH:-}
       CLUB_THURSDAY_COACH: ${CLUB_THURSDAY_COACH:-}
       CLUB_FRIDAY_COACH: ${CLUB_FRIDAY_COACH:-}
-      PGHOST: database
-      PGPORT: 5432
-      PGDATABASE: badminton
-      PGUSER: badminton
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      JWT_SECRET: ${JWT_SECRET:?Définissez JWT_SECRET dans .env}
-      ADMIN_EMAIL: ${ADMIN_EMAIL:?Définissez ADMIN_EMAIL dans .env}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Définissez ADMIN_PASSWORD dans .env}
+    ports:
+      - "${APP_PORT:-3000}:3000"
     depends_on:
       database:
         condition: service_healthy
-
-  frontend:
-    build: ./frontend
-    restart: unless-stopped
-    ports:
-      - "${APP_PORT:-8080}:80"
-    depends_on:
-      - backend
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:

@@ -3,6 +3,11 @@ dist/
 .env
 .env.*
 !.env.example
+.npmrc
+*.pem
+*.key
+*.p12
+secrets/
 npm-debug.log*
 .DS_Store
 __pycache__/

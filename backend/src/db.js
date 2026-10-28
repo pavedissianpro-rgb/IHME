@@ -3,83 +3,264 @@ import pg from "pg";
 const { Pool } = pg;
 
 export const pool = new Pool({
-  ...(process.env.DATABASE_URL
-    ? { connectionString: process.env.DATABASE_URL }
-    : {
-        host: process.env.PGHOST || "localhost",
-        port: Number(process.env.PGPORT || 5432),
-        user: process.env.PGUSER,
-        password: process.env.PGPASSWORD,
-        database: process.env.PGDATABASE || "badminton"
-      }),
+  connectionString: process.env.DATABASE_URL,
   max: 4,
   idleTimeoutMillis: 30_000
 });
 
+export function normalizeName(value) {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase("fr")
+    .trim()
+    .replace(/\s+/gu, " ");
+}
+
+function splitName(value) {
+  const parts = value.trim().replace(/\s+/gu, " ").split(" ");
+  return { firstName: parts.shift(), lastName: parts.join(" ") || "-" };
+}
+
+export const fictionalPlayers = [
+  ["Lina", "Martin"], ["Hugo", "Bernard"], ["Inès", "Petit"], ["Noé", "Robert"],
+  ["Jade", "Richard"], ["Adam", "Durand"], ["Léa", "Moreau"], ["Evan", "Simon"],
+  ["Mila", "Laurent"], ["Sacha", "Lefebvre"]
+];
+
+export const fictionalTrainers = [
+  "Camille Martin",
+  "Émile Petit",
+  "Lina Moreau"
+];
+
+export function isFictionalTrainerName(name) {
+  const normalizedName = normalizeName(name);
+  return fictionalTrainers.some((trainer) => normalizeName(trainer) === normalizedName) ||
+    normalizedName === normalizeName("Entraîneur démo");
+}
+
+export function isFictionalPlayerName(normalizedName) {
+  return fictionalPlayers.some(([firstName, lastName]) =>
+    normalizeName(`${firstName} ${lastName}`) === normalizedName
+  ) || /^joueur demo \d{2}$/u.test(normalizedName);
+}
+
+const weeklySchedule = [
+  { weekday: 2, start: "19:00", end: "21:00", env: "CLUB_TUESDAY_COACH", fallback: fictionalTrainers[0] },
+  { weekday: 4, start: "19:00", end: "21:00", env: "CLUB_THURSDAY_COACH", fallback: fictionalTrainers[1] },
+  { weekday: 5, start: "19:00", end: "20:00", env: "CLUB_FRIDAY_COACH", fallback: fictionalTrainers[2] }
+];
+
 export async function initializeDatabase({ seedDemo = false } = {}) {
+  const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
+  new Intl.DateTimeFormat("fr-FR", { timeZone: timezone });
+
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS coaches (
-      id SERIAL PRIMARY KEY,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS members (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
     CREATE TABLE IF NOT EXISTS sessions (
       id SERIAL PRIMARY KEY,
-      starts_at TIMESTAMPTZ NOT NULL,
-      ends_at TIMESTAMPTZ NOT NULL,
-      location TEXT NOT NULL,
-      coach TEXT NOT NULL DEFAULT 'Entraîneur démo',
+      starts_at TIMESTAMPTZ,
+      ends_at TIMESTAMPTZ,
+      location TEXT,
+      coach TEXT DEFAULT 'Entraîneur démo',
       is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
       is_cancelled BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CONSTRAINT sessions_valid_time CHECK (ends_at > starts_at)
     );
-    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coach TEXT NOT NULL DEFAULT 'Entraîneur démo';
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_date DATE;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS start_time TIME;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS end_time TIME;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coach_name TEXT;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS note TEXT;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS cancelled BOOLEAN;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_recurring BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN NOT NULL DEFAULT FALSE;
-    CREATE TABLE IF NOT EXISTS attendance (
-      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-      member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-      response TEXT NOT NULL CHECK (response IN ('present', 'absent', 'maybe')),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (session_id, member_id)
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coach TEXT DEFAULT 'Entraîneur démo';
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+    CREATE TABLE IF NOT EXISTS players (
+      id SERIAL PRIMARY KEY,
+      first_name TEXT NOT NULL,
+      last_name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS responses (
+      id SERIAL PRIMARY KEY,
+      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'incertain')),
+      actual_presence BOOLEAN,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (session_id, player_id)
+    );
+    CREATE TABLE IF NOT EXISTS trainers (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS coach_credentials (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      password_hash TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS coach_sessions (
+      token_hash TEXT PRIMARY KEY,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    ALTER TABLE responses ADD COLUMN IF NOT EXISTS actual_presence BOOLEAN;
+    CREATE INDEX IF NOT EXISTS sessions_date_idx ON sessions(session_date, start_time);
     CREATE INDEX IF NOT EXISTS sessions_starts_at_idx ON sessions(starts_at);
-    CREATE INDEX IF NOT EXISTS attendance_member_idx ON attendance(member_id);
+    CREATE INDEX IF NOT EXISTS responses_player_idx ON responses(player_id);
+    CREATE INDEX IF NOT EXISTS responses_session_idx ON responses(session_id);
+    CREATE INDEX IF NOT EXISTS coach_sessions_expiry_idx ON coach_sessions(expires_at);
   `);
 
-  if (seedDemo) await ensureDemoMembers();
+  await pool.query(`
+    UPDATE sessions
+    SET session_date = (starts_at AT TIME ZONE $1)::date,
+        start_time = (starts_at AT TIME ZONE $1)::time,
+        end_time = (ends_at AT TIME ZONE $1)::time,
+        coach_name = COALESCE(NULLIF(coach_name, ''), coach, 'Entraîneur démo'),
+        cancelled = COALESCE(cancelled, is_cancelled, FALSE)
+    WHERE starts_at IS NOT NULL AND ends_at IS NOT NULL
+      AND (session_date IS NULL OR start_time IS NULL OR end_time IS NULL
+        OR coach_name IS NULL OR cancelled IS NULL)
+  `, [timezone]);
+
+  await migrateLegacyMembers();
+  if (seedDemo) await assertFictionalDemoData();
+  await seedTrainers({ seedDemo });
+  await seedCoachPassword();
+  if (seedDemo) await seedFictionalPlayers();
   await ensureUpcomingSessions({ seedDemo });
-  if (seedDemo) await seedDemoAttendance();
+  if (seedDemo) await seedPastSessions();
+  await migrateLegacyAttendance();
+  await pool.query("DELETE FROM coach_sessions WHERE expires_at <= NOW()");
+}
+
+async function assertFictionalDemoData() {
+  const allowedPlayers = new Set([
+    ...fictionalPlayers.map(([first, last]) => normalizeName(`${first} ${last}`)),
+    ...Array.from({ length: 99 }, (_, index) => `joueur demo ${String(index + 1).padStart(2, "0")}`)
+  ]);
+  const allowedTrainers = new Set([
+    ...fictionalTrainers.map(normalizeName),
+    normalizeName("Entraîneur démo")
+  ]);
+  const result = await pool.query(`
+    SELECT
+      EXISTS (SELECT 1 FROM players WHERE normalized_name <> ALL($1::text[])) AS has_real_players,
+      EXISTS (SELECT 1 FROM trainers WHERE normalized_name <> ALL($2::text[])) AS has_real_trainers,
+      EXISTS (
+        SELECT 1 FROM sessions
+        WHERE location !~ '^Gymnase de démonstration(?: [0-9]+)?$'
+      ) AS has_real_locations,
+      EXISTS (
+        SELECT 1 FROM sessions
+        WHERE COALESCE(coach_name, coach, '') <> ALL($3::text[])
+      ) AS has_real_session_coaches
+  `, [
+    [...allowedPlayers],
+    [...allowedTrainers],
+    [...fictionalTrainers, "Entraîneur démo"]
+  ]);
+  const data = result.rows[0];
+  if (data.has_real_players || data.has_real_trainers ||
+      data.has_real_locations || data.has_real_session_coaches) {
+    throw new Error("La base contient des données non fictives ; configurez COACH_PASSWORD pour le club privé.");
+  }
+}
+
+async function migrateLegacyMembers() {
+  const result = await pool.query(`
+    SELECT id, name FROM members
+  `).catch((error) => {
+    if (error.code === "42P01") return { rows: [] };
+    throw error;
+  });
+
+  for (const member of result.rows) {
+    const name = member.name.trim().replace(/\s+/gu, " ");
+    if (!name) continue;
+    const { firstName, lastName } = splitName(name);
+    const normalizedName = normalizeName(`${firstName} ${lastName}`);
+    await pool.query(`
+      INSERT INTO players (first_name, last_name, normalized_name)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (normalized_name) DO NOTHING
+    `, [firstName, lastName, normalizedName]);
+  }
+}
+
+async function migrateLegacyAttendance() {
+  const attendance = await pool.query(`
+    SELECT a.session_id, m.name, a.response
+    FROM attendance a
+    JOIN members m ON m.id = a.member_id
+  `).catch((error) => {
+    if (error.code === "42P01") return { rows: [] };
+    throw error;
+  });
+
+  for (const row of attendance.rows) {
+    const { firstName, lastName } = splitName(row.name);
+    const normalizedName = normalizeName(`${firstName} ${lastName}`);
+    const status = row.response === "maybe" ? "incertain" : row.response;
+    if (!["present", "absent", "incertain"].includes(status)) continue;
+    await pool.query(`
+      INSERT INTO responses (session_id, player_id, status)
+      SELECT $1, id, $3 FROM players WHERE normalized_name = $2
+      ON CONFLICT (session_id, player_id) DO NOTHING
+    `, [row.session_id, normalizedName, status]);
+  }
+}
+
+async function seedTrainers({ seedDemo }) {
+  const names = seedDemo
+    ? fictionalTrainers
+    : weeklySchedule.map(({ env, fallback }) => process.env[env]?.trim() || fallback);
+  for (const name of [...fictionalTrainers, ...names]) {
+    await pool.query(`
+      INSERT INTO trainers (name, normalized_name)
+      VALUES ($1, $2)
+      ON CONFLICT (normalized_name) DO NOTHING
+    `, [name, normalizeName(name)]);
+  }
+}
+
+async function seedCoachPassword() {
+  const password = process.env.COACH_PASSWORD || "SalbrisDemo2026!";
+  const bcrypt = await import("bcryptjs");
+  const passwordHash = await bcrypt.default.hash(password, 12);
+  await pool.query(`
+    INSERT INTO coach_credentials (id, password_hash)
+    VALUES (1, $1)
+    ON CONFLICT (id) DO UPDATE
+    SET password_hash = EXCLUDED.password_hash, updated_at = NOW()
+  `, [passwordHash]);
+}
+
+async function seedFictionalPlayers() {
+  for (const [firstName, lastName] of fictionalPlayers) {
+    await pool.query(`
+      INSERT INTO players (first_name, last_name, normalized_name)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (normalized_name) DO NOTHING
+    `, [firstName, lastName, normalizeName(`${firstName} ${lastName}`)]);
+  }
 }
 
 export async function ensureUpcomingSessions({ seedDemo = false } = {}) {
   const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
-  const location = seedDemo ? "Gymnase de démonstration" : (process.env.CLUB_LOCATION || "Pillon");
-  const schedule = seedDemo
-    ? ["Entraîneur démo", "Entraîneur démo", "Entraîneur démo"]
-    : [
-        process.env.CLUB_TUESDAY_COACH || "Entraîneur",
-        process.env.CLUB_THURSDAY_COACH || "Entraîneur",
-        process.env.CLUB_FRIDAY_COACH || "Entraîneur"
-      ];
-
-  try {
-    new Intl.DateTimeFormat("fr-FR", { timeZone: timezone });
-  } catch {
-    throw new Error("CLUB_TIMEZONE doit être un fuseau horaire IANA valide.");
-  }
-  if (!seedDemo && process.env.ALLOW_REAL_NAMES === "true" &&
-      [process.env.CLUB_TUESDAY_COACH, process.env.CLUB_THURSDAY_COACH, process.env.CLUB_FRIDAY_COACH]
-        .some((name) => !name?.trim() || name.trim().length > 100)) {
-    throw new Error("Configurez les trois noms d'entraîneur dans l'environnement privé du club.");
-  }
+  const location = seedDemo ? "Gymnase de démonstration" : (process.env.CLUB_LOCATION || "Gymnase Pillon");
+  const names = seedDemo
+    ? fictionalTrainers
+    : weeklySchedule.map(({ env, fallback }) => process.env[env]?.trim() || fallback);
 
   const client = await pool.connect();
   try {
@@ -88,41 +269,68 @@ export async function ensureUpcomingSessions({ seedDemo = false } = {}) {
     await client.query(`
       WITH days AS (
         SELECT (NOW() AT TIME ZONE $1)::date + day_offset AS local_date
-        FROM generate_series(0, 14) AS offsets(day_offset)
+        FROM generate_series(0, 13) AS offsets(day_offset)
       ),
-      weekly_schedule(weekday, starts, ends, coach) AS (
+      weekly_schedule(weekday, starts, ends, coach_name) AS (
         VALUES
           (2, TIME '19:00', TIME '21:00', $2::text),
           (4, TIME '19:00', TIME '21:00', $3::text),
           (5, TIME '19:00', TIME '20:00', $4::text)
       ),
       planned AS (
-        SELECT
-          ((days.local_date + weekly_schedule.starts) AT TIME ZONE $1) AS starts_at,
-          ((days.local_date + weekly_schedule.ends) AT TIME ZONE $1) AS ends_at,
-          weekly_schedule.coach
+        SELECT days.local_date AS session_date, weekly_schedule.starts AS start_time,
+          weekly_schedule.ends AS end_time, weekly_schedule.coach_name,
+          (days.local_date + weekly_schedule.starts) AT TIME ZONE $1 AS starts_at,
+          (days.local_date + weekly_schedule.ends) AT TIME ZONE $1 AS ends_at
         FROM days
         JOIN weekly_schedule ON EXTRACT(ISODOW FROM days.local_date) = weekly_schedule.weekday
-      ),
-      update_recurring AS (
-        UPDATE sessions existing
-        SET ends_at = planned.ends_at, location = $5, coach = planned.coach
-        FROM planned
-        WHERE existing.starts_at = planned.starts_at
-          AND existing.is_recurring = TRUE
-          AND existing.is_cancelled = FALSE
-        RETURNING existing.id
       )
-      INSERT INTO sessions (starts_at, ends_at, location, coach, is_recurring)
-      SELECT planned.starts_at, planned.ends_at, $5, planned.coach, TRUE
+      UPDATE sessions existing
+      SET ends_at = planned.ends_at, end_time = planned.end_time,
+          location = $5, coach = planned.coach_name,
+          coach_name = planned.coach_name
       FROM planned
-      WHERE planned.starts_at >= NOW()
-        AND planned.starts_at < NOW() + INTERVAL '14 days'
+      WHERE existing.session_date = planned.session_date
+        AND existing.start_time = planned.start_time
+        AND existing.is_recurring = TRUE
+        AND existing.cancelled = FALSE
+        AND existing.is_cancelled = FALSE
+    `, [timezone, ...names, location]);
+
+    await client.query(`
+      WITH days AS (
+        SELECT (NOW() AT TIME ZONE $1)::date + day_offset AS local_date
+        FROM generate_series(0, 13) AS offsets(day_offset)
+      ),
+      weekly_schedule(weekday, starts, ends, coach_name) AS (
+        VALUES
+          (2, TIME '19:00', TIME '21:00', $2::text),
+          (4, TIME '19:00', TIME '21:00', $3::text),
+          (5, TIME '19:00', TIME '20:00', $4::text)
+      ),
+      planned AS (
+        SELECT days.local_date AS session_date, weekly_schedule.starts AS start_time,
+          weekly_schedule.ends AS end_time, weekly_schedule.coach_name,
+          (days.local_date + weekly_schedule.starts) AT TIME ZONE $1 AS starts_at,
+          (days.local_date + weekly_schedule.ends) AT TIME ZONE $1 AS ends_at
+        FROM days
+        JOIN weekly_schedule ON EXTRACT(ISODOW FROM days.local_date) = weekly_schedule.weekday
+      )
+      INSERT INTO sessions (
+        starts_at, ends_at, location, coach, is_recurring, is_cancelled,
+        session_date, start_time, end_time, coach_name, cancelled
+      )
+      SELECT starts_at, ends_at, $5, coach_name, TRUE, FALSE,
+        session_date, start_time, end_time, coach_name, FALSE
+      FROM planned
+      WHERE starts_at >= NOW()
+        AND starts_at < NOW() + INTERVAL '14 days'
         AND NOT EXISTS (
           SELECT 1 FROM sessions existing
-          WHERE existing.starts_at = planned.starts_at
+          WHERE existing.session_date = planned.session_date
+            AND existing.start_time = planned.start_time
         )
-    `, [timezone, ...schedule, location]);
+    `, [timezone, ...names, location]);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -130,59 +338,80 @@ export async function ensureUpcomingSessions({ seedDemo = false } = {}) {
   } finally {
     client.release();
   }
-}
 
-async function ensureDemoMembers() {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(74192832)");
-    const safeDemoData = await client.query(`
-      SELECT
-        NOT EXISTS (SELECT 1 FROM members WHERE name !~ '^Joueur Démo [0-9]{2}$')
-        AND NOT EXISTS (SELECT 1 FROM sessions WHERE location !~ '^Gymnase de démonstration$' AND location !~ '^Gymnase de démonstration [0-9]+$')
-        AND NOT EXISTS (SELECT 1 FROM sessions WHERE coach !~ '^Entraîneur démo$')
-        AS safe
-    `);
-    if (!safeDemoData.rows[0].safe) {
-      throw new Error("La base contient des données non fictives; refus de démarrer en mode démonstration.");
+  if (seedDemo) {
+    const trainerNames = new Set(names);
+    for (const trainer of trainerNames) {
+      await pool.query(`
+        INSERT INTO trainers (name, normalized_name)
+        VALUES ($1, $2)
+        ON CONFLICT (normalized_name) DO NOTHING
+      `, [trainer, normalizeName(trainer)]);
     }
-
-    await client.query("DELETE FROM sessions WHERE location ~ '^Gymnase de démonstration [0-9]+$'");
-    await client.query(`
-      INSERT INTO members (name)
-      SELECT name FROM unnest(ARRAY['Joueur Démo 01', 'Joueur Démo 02', 'Joueur Démo 03']) AS demo_names(name)
-      ON CONFLICT (name) DO NOTHING
-    `);
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
   }
 }
 
-async function seedDemoAttendance() {
+async function seedPastSessions() {
+  const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
+  const location = "Gymnase de démonstration";
+  const names = fictionalTrainers;
+
   await pool.query(`
-    INSERT INTO attendance (session_id, member_id, response)
-    SELECT sessions.id, members.id, demo.response
-    FROM (
+    WITH days AS (
+      SELECT (NOW() AT TIME ZONE $1)::date - day_offset AS local_date
+      FROM generate_series(1, 28) AS offsets(day_offset)
+    ),
+    weekly_schedule(weekday, starts, ends, coach_name) AS (
       VALUES
-        (0, 1, 'present'::text),
-        (0, 2, 'maybe'::text),
-        (1, 3, 'present'::text)
-    ) AS demo(session_number, member_number, response)
-    JOIN (
-      SELECT id, ROW_NUMBER() OVER (ORDER BY starts_at) - 1 AS session_number
+        (2, TIME '19:00', TIME '21:00', $2::text),
+        (4, TIME '19:00', TIME '21:00', $3::text),
+        (5, TIME '19:00', TIME '20:00', $4::text)
+    ),
+    planned AS (
+      SELECT days.local_date AS session_date, weekly_schedule.starts AS start_time,
+        weekly_schedule.ends AS end_time, weekly_schedule.coach_name,
+        (days.local_date + weekly_schedule.starts) AT TIME ZONE $1 AS starts_at,
+        (days.local_date + weekly_schedule.ends) AT TIME ZONE $1 AS ends_at
+      FROM days JOIN weekly_schedule
+        ON EXTRACT(ISODOW FROM days.local_date) = weekly_schedule.weekday
+    )
+    INSERT INTO sessions (
+      starts_at, ends_at, location, coach, is_recurring, is_cancelled,
+      session_date, start_time, end_time, coach_name, cancelled
+    )
+    SELECT starts_at, ends_at, $5, coach_name, TRUE, FALSE,
+      session_date, start_time, end_time, coach_name, FALSE
+    FROM planned
+    WHERE NOT EXISTS (
+      SELECT 1 FROM sessions existing
+      WHERE existing.session_date = planned.session_date
+        AND existing.start_time = planned.start_time
+    )
+  `, [timezone, ...names, location]);
+
+  await pool.query(`
+    INSERT INTO responses (session_id, player_id, status, actual_presence)
+    SELECT s.id, p.id, seed.status, seed.actual_presence
+    FROM (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY session_date, start_time) AS ordinal
       FROM sessions
-      WHERE location = 'Gymnase de démonstration' AND is_cancelled = FALSE AND starts_at >= NOW()
-    ) sessions ON sessions.session_number = demo.session_number
-    JOIN (
-      SELECT id, ROW_NUMBER() OVER (ORDER BY name) AS member_number
-      FROM members
-      WHERE name LIKE 'Joueur Démo %'
-    ) members ON members.member_number = demo.member_number
-    ON CONFLICT (session_id, member_id) DO NOTHING
-  `);
+      WHERE session_date < (NOW() AT TIME ZONE $1)::date AND cancelled = FALSE
+      ORDER BY session_date DESC, start_time DESC
+      LIMIT 4
+    ) s
+    CROSS JOIN LATERAL (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS ordinal
+      FROM players
+      ORDER BY id
+      LIMIT 4
+    ) p
+    JOIN LATERAL (
+      SELECT
+        CASE WHEN ((s.ordinal + p.ordinal) % 4) = 0 THEN 'absent'
+          WHEN ((s.ordinal + p.ordinal) % 4) = 1 THEN 'incertain'
+          ELSE 'present' END AS status,
+        ((s.ordinal + p.ordinal) % 4) <> 0 AS actual_presence
+    ) seed ON TRUE
+    ON CONFLICT (session_id, player_id) DO NOTHING
+  `, [timezone]);
 }

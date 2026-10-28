@@ -4,6 +4,11 @@
 .env
 .env.*
 !.env.example
+.npmrc
+*.pem
+*.key
+*.p12
+secrets
 deploy.curl
 node_modules
 dist

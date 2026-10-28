@@ -1,332 +1,681 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import cookieParser from "cookie-parser";
+import crypto from "node:crypto";
 import express from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { rateLimit } from "express-rate-limit";
 import helmet from "helmet";
-import jwt from "jsonwebtoken";
-import { ensureUpcomingSessions, initializeDatabase, pool } from "./db.js";
+import {
+  ensureUpcomingSessions, initializeDatabase, isFictionalPlayerName, isFictionalTrainerName, normalizeName, pool
+} from "./db.js";
 
-const app = express();
-const port = Number(process.env.PORT || 3000);
-const cookieName = "badminton_coach";
-const demoMode = !process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD || !process.env.JWT_SECRET;
-const allowRealNames = process.env.ALLOW_REAL_NAMES === "true" && !demoMode;
-const frontendDirectory = fileURLToPath(new URL("../../frontend/dist/", import.meta.url));
-const responses = new Set(["present", "absent", "maybe"]);
+const appDirectory = path.dirname(fileURLToPath(import.meta.url));
+const frontendDirectory = path.resolve(appDirectory, "../../frontend/dist");
+const cookieName = "salbris_coach";
+const statuses = new Set(["present", "absent", "incertain"]);
+const basePath = normalizeBasePath(process.env.BASE_PATH || "/");
+const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
+const demoMode = !process.env.COACH_PASSWORD;
+const restrictedDemo = demoMode && process.env.NODE_ENV === "production";
 
-if ((!process.env.DATABASE_URL && !(process.env.PGHOST && process.env.PGUSER && process.env.PGPASSWORD)) ||
-    (process.env.NODE_ENV === "production" && !process.env.PUBLIC_ORIGIN) ||
-    ([process.env.ADMIN_EMAIL, process.env.ADMIN_PASSWORD, process.env.JWT_SECRET].some(Boolean) && demoMode)) {
-  throw new Error("Configurez la base de données, PUBLIC_ORIGIN en production, et les trois identifiants entraîneur ensemble.");
-}
-if (process.env.ALLOW_REAL_NAMES === "true" && demoMode) {
-  throw new Error("ALLOW_REAL_NAMES=true exige des identifiants entraîneur et un hébergement privé hors démonstration.");
-}
-if (!demoMode && process.env.JWT_SECRET.length < 32) {
-  throw new Error("JWT_SECRET doit contenir au moins 32 caractères.");
-}
-if (process.env.PUBLIC_ORIGIN) {
-  const origin = new URL(process.env.PUBLIC_ORIGIN);
-  if (!["http:", "https:"].includes(origin.protocol) || origin.origin !== process.env.PUBLIC_ORIGIN) {
-    throw new Error("PUBLIC_ORIGIN doit être une origine HTTP(S) sans chemin.");
+function normalizeBasePath(value) {
+  if (typeof value !== "string" || !/^\/(?:[A-Za-z0-9._~-]+\/)*$/.test(value)) {
+    throw new Error("BASE_PATH doit être un chemin absolu sûr se terminant par /.");
   }
-  if (allowRealNames && origin.protocol !== "https:") {
-    throw new Error("L’inscription avec des noms réels exige un PUBLIC_ORIGIN HTTPS.");
-  }
+  return value;
 }
-
-app.disable("x-powered-by");
-app.set("trust proxy", 1);
-app.use(helmet());
-app.use(express.json({ limit: "20kb" }));
-app.use(cookieParser());
-app.use((req, res, next) => {
-  if (req.body === undefined || req.body === null) req.body = {};
-  if (typeof req.body !== "object" || Array.isArray(req.body)) {
-    return res.status(400).json({ error: "Le corps de la requête doit être un objet JSON." });
-  }
-  next();
-});
 
 function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
 
-function requireCoach(req, res, next) {
-  if (demoMode) return res.status(403).json({ error: "La gestion entraîneur est désactivée sur la démonstration." });
-  const token = req.cookies[cookieName];
-  if (!token) return res.status(401).json({ error: "Connexion entraîneur requise." });
-
-  try {
-    req.coach = jwt.verify(token, process.env.JWT_SECRET);
-    return next();
-  } catch {
-    res.clearCookie(cookieName, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" });
-    return res.status(401).json({ error: "Session expirée, veuillez vous reconnecter." });
+function normalizedField(value, label, { required = true, maxLength = 100 } = {}) {
+  if (typeof value !== "string") {
+    if (!required && (value === undefined || value === null)) return "";
+    throw new InputError(`Vérifiez le champ « ${label} ».`);
   }
+  const result = value.trim().replace(/\s+/gu, " ");
+  if ((!result && required) || result.length > maxLength || /[\u0000-\u001f\u007f]/u.test(result)) {
+    throw new InputError(`Le champ « ${label} » doit contenir au maximum ${maxLength} caractères.`);
+  }
+  return result;
+}
+
+function validId(value) {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 function validDate(value) {
-  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }
 
-function validLocation(value) {
-  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 160;
+function validTime(value) {
+  return typeof value === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
 
-function normalizeMemberName(value) {
-  if (typeof value !== "string") return "";
-  const name = value.trim().replace(/\s+/gu, " ");
-  return name.length > 0 && name.length <= 100 && !/[\u0000-\u001f\u007f]/u.test(name) ? name : "";
-}
-
-app.get("/api/health", asyncRoute(async (_req, res) => {
-  await pool.query("SELECT 1");
-  res.json({ status: "ok", version: process.env.APP_VERSION || "local" });
-}));
-
-app.get("/api/config", (_req, res) => res.json({ demoMode, allowRealNames, timezone: process.env.CLUB_TIMEZONE || "Europe/Paris" }));
-
-app.post("/api/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false }), asyncRoute(async (req, res) => {
-  if (demoMode) return res.status(403).json({ error: "La connexion entraîneur est désactivée sur la démonstration." });
-  const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
-  const password = typeof req.body.password === "string" ? req.body.password : "";
-  const result = await pool.query("SELECT id, email, password_hash FROM coaches WHERE email = $1", [email]);
-  const coach = result.rows[0];
-  if (!coach || !(await bcrypt.compare(password, coach.password_hash))) {
-    return res.status(401).json({ error: "Adresse e-mail ou mot de passe incorrect." });
+function validateSession(body) {
+  if (!validDate(body.sessionDate) || !validTime(body.startTime) || !validTime(body.endTime) ||
+      body.endTime <= body.startTime) {
+    throw new InputError("Vérifiez la date et les heures de la séance.");
   }
+  return {
+    sessionDate: body.sessionDate,
+    startTime: body.startTime,
+    endTime: body.endTime,
+    location: normalizedField(body.location, "lieu", { maxLength: 160 }),
+    coachName: normalizedField(body.coachName, "entraîneur"),
+    note: normalizedField(body.note ?? "", "note", { required: false, maxLength: 1000 })
+  };
+}
 
-  const token = jwt.sign({ id: coach.id, email: coach.email }, process.env.JWT_SECRET, { expiresIn: "12h" });
-  res.cookie(cookieName, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: process.env.BASE_PATH || "/",
-    maxAge: 12 * 60 * 60 * 1000
-  });
-  return res.json({ coach: { email: coach.email } });
-}));
+function playerName(firstName, lastName) {
+  const first = normalizedField(firstName, "prénom");
+  const last = normalizedField(lastName, "nom");
+  const normalizedName = normalizeName(`${first} ${last}`);
+  if (!normalizedName || normalizedName.length > 200) {
+    throw new InputError("Le prénom et le nom doivent contenir au maximum 100 caractères chacun.");
+  }
+  return { firstName: first, lastName: last, normalizedName };
+}
 
-app.post("/api/auth/logout", (_req, res) => {
-  res.clearCookie(cookieName, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: process.env.BASE_PATH || "/" });
-  res.status(204).end();
-});
+function tokenHash(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
 
-app.get("/api/auth/me", requireCoach, (req, res) => res.json({ coach: { email: req.coach.email } }));
+export function calculateAttendanceRate(presentCount, attendanceCount) {
+  const present = Number(presentCount);
+  const total = Number(attendanceCount);
+  if (!Number.isFinite(present) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.round((present / total) * 1000) / 10;
+}
 
-app.get("/api/members", asyncRoute(async (_req, res) => {
-  const result = await pool.query("SELECT id, name FROM members ORDER BY name");
-  res.json({ members: result.rows });
-}));
+function cookieOptions(req) {
+  const secure = process.env.NODE_ENV === "production" &&
+    (req.secure || process.env.PUBLIC_ORIGIN?.startsWith("https://"));
+  return { httpOnly: true, sameSite: "strict", secure: Boolean(secure), path: basePath, maxAge: 12 * 60 * 60 * 1000 };
+}
 
-app.post("/api/members/register", rateLimit({ windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: true, legacyHeaders: false }), asyncRoute(async (req, res) => {
-  if (!allowRealNames) return res.status(403).json({ error: "L’inscription est désactivée sur cette démonstration." });
-  const name = normalizeMemberName(req.body.name);
-  if (!name) return res.status(400).json({ error: "Saisissez un nom valide (1 à 100 caractères)." });
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(hashtext(LOWER($1)))", [name]);
-    const existing = await client.query("SELECT id FROM members WHERE LOWER(name) = LOWER($1)", [name]);
-    if (existing.rowCount) {
-      await client.query("COMMIT");
-      return res.status(409).json({ error: "Ce nom est déjà inscrit. Choisissez-le dans la liste." });
+function coachAuthentication(database) {
+  return async (req, res, next) => {
+    const token = req.cookies[cookieName];
+    if (!token) return res.status(401).json({ error: "Connectez-vous pour accéder à cette fonction." });
+    try {
+      const result = await database.query(`
+        SELECT token_hash FROM coach_sessions
+        WHERE token_hash = $1 AND expires_at > NOW()
+      `, [tokenHash(token)]);
+      if (!result.rowCount) {
+        res.clearCookie(cookieName, { ...cookieOptions(req), maxAge: undefined });
+        return res.status(401).json({ error: "Votre session a expiré. Veuillez vous reconnecter." });
+      }
+      return next();
+    } catch (error) {
+      return next(error);
     }
-
-    const result = await client.query("INSERT INTO members (name) VALUES ($1) RETURNING id, name", [name]);
-    await client.query("COMMIT");
-    return res.status(201).json({ member: result.rows[0] });
-  } catch (error) {
-    await client.query("ROLLBACK");
-    if (error.code === "23505") return res.status(409).json({ error: "Ce nom est déjà inscrit. Choisissez-le dans la liste." });
-    throw error;
-  } finally {
-    client.release();
-  }
-}));
-
-app.post("/api/members", requireCoach, asyncRoute(async (req, res) => {
-  const name = normalizeMemberName(req.body.name);
-  if (!name) return res.status(400).json({ error: "Le nom doit contenir entre 1 et 100 caractères." });
-
-  try {
-    const result = await pool.query("INSERT INTO members (name) VALUES ($1) RETURNING id, name", [name]);
-    return res.status(201).json({ member: result.rows[0] });
-  } catch (error) {
-    if (error.code === "23505") return res.status(409).json({ error: "Ce membre existe déjà." });
-    throw error;
-  }
-}));
-
-app.delete("/api/members/:id", requireCoach, asyncRoute(async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Identifiant de membre invalide." });
-  const result = await pool.query("DELETE FROM members WHERE id = $1 RETURNING id", [id]);
-  if (!result.rowCount) return res.status(404).json({ error: "Membre introuvable." });
-  res.status(204).end();
-}));
-
-app.get("/api/sessions", asyncRoute(async (_req, res) => {
-  const result = await pool.query(`
-    SELECT s.id, s.starts_at, s.ends_at, s.location, s.coach,
-      COUNT(a.member_id) FILTER (WHERE a.response = 'present')::int AS present_count,
-      COUNT(a.member_id) FILTER (WHERE a.response = 'maybe')::int AS maybe_count,
-      COUNT(a.member_id) FILTER (WHERE a.response = 'absent')::int AS absent_count
-    FROM sessions s
-    LEFT JOIN attendance a ON a.session_id = s.id
-    WHERE s.is_cancelled = FALSE AND s.starts_at >= NOW() - INTERVAL '1 day'
-    GROUP BY s.id
-    ORDER BY s.starts_at
-  `);
-  res.json({ sessions: result.rows });
-}));
-
-app.post("/api/sessions", requireCoach, asyncRoute(async (req, res) => {
-  const { startsAt, endsAt, location, coach } = req.body;
-  if (!validDate(startsAt) || !validDate(endsAt) || Date.parse(endsAt) <= Date.parse(startsAt) || !validLocation(location) || !validLocation(coach)) {
-    return res.status(400).json({ error: "Vérifiez les dates, horaires, le lieu et l’entraîneur de la séance." });
-  }
-  const result = await pool.query(
-    "INSERT INTO sessions (starts_at, ends_at, location, coach) VALUES ($1, $2, $3, $4) RETURNING id, starts_at, ends_at, location, coach",
-    [startsAt, endsAt, location.trim(), coach.trim()]
-  );
-  res.status(201).json({ session: result.rows[0] });
-}));
-
-app.patch("/api/sessions/:id", requireCoach, asyncRoute(async (req, res) => {
-  const id = Number(req.params.id);
-  const { startsAt, endsAt, location, coach } = req.body;
-  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Identifiant de séance invalide." });
-  if (!validDate(startsAt) || !validDate(endsAt) || Date.parse(endsAt) <= Date.parse(startsAt) || !validLocation(location) || !validLocation(coach)) {
-    return res.status(400).json({ error: "Vérifiez les dates, horaires, le lieu et l’entraîneur de la séance." });
-  }
-  const result = await pool.query(
-    "UPDATE sessions SET starts_at = $1, ends_at = $2, location = $3, coach = $4, is_recurring = FALSE WHERE id = $5 AND is_cancelled = FALSE RETURNING id, starts_at, ends_at, location, coach",
-    [startsAt, endsAt, location.trim(), coach.trim(), id]
-  );
-  if (!result.rowCount) return res.status(404).json({ error: "Séance introuvable." });
-  res.json({ session: result.rows[0] });
-}));
-
-app.delete("/api/sessions/:id", requireCoach, asyncRoute(async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Identifiant de séance invalide." });
-  const result = await pool.query(`
-    UPDATE sessions SET is_cancelled = TRUE
-    WHERE id = $1 AND is_recurring = TRUE
-    RETURNING id
-  `, [id]);
-  if (!result.rowCount) {
-    const deleted = await pool.query("DELETE FROM sessions WHERE id = $1 AND is_recurring = FALSE RETURNING id", [id]);
-    if (!deleted.rowCount) return res.status(404).json({ error: "Séance introuvable." });
-  }
-  res.status(204).end();
-}));
-
-app.get("/api/sessions/:id/attendance", asyncRoute(async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Identifiant de séance invalide." });
-  const session = await pool.query("SELECT id FROM sessions WHERE id = $1 AND is_cancelled = FALSE", [id]);
-  if (!session.rowCount) return res.status(404).json({ error: "Séance introuvable." });
-  const result = await pool.query(`
-    SELECT m.id, m.name, a.response
-    FROM members m
-    LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = $1
-    ORDER BY m.name
-  `, [id]);
-  res.json({ attendance: result.rows });
-}));
-
-app.put("/api/sessions/:id/attendance", asyncRoute(async (req, res) => {
-  const sessionId = Number(req.params.id);
-  const memberId = Number(req.body.memberId);
-  const response = req.body.response;
-  if (!Number.isInteger(sessionId) || sessionId < 1 || !Number.isInteger(memberId) || memberId < 1 || !responses.has(response)) {
-    return res.status(400).json({ error: "Séance, membre ou réponse invalide." });
-  }
-  const result = await pool.query(`
-    INSERT INTO attendance (session_id, member_id, response)
-    SELECT s.id, m.id, $3 FROM sessions s, members m
-    WHERE s.id = $1 AND s.is_cancelled = FALSE AND m.id = $2
-    ON CONFLICT (session_id, member_id)
-    DO UPDATE SET response = EXCLUDED.response, updated_at = NOW()
-    RETURNING session_id, member_id, response
-  `, [sessionId, memberId, response]);
-  if (!result.rowCount) return res.status(404).json({ error: "Séance ou membre introuvable." });
-  res.json({ attendance: result.rows[0] });
-}));
-
-app.get("/api/stats", requireCoach, asyncRoute(async (_req, res) => {
-  const [summary, members] = await Promise.all([
-    pool.query(`
-      SELECT COUNT(DISTINCT s.id)::int AS sessions_count,
-        COUNT(a.member_id) FILTER (WHERE a.response = 'present')::int AS present_count,
-        COUNT(a.member_id) FILTER (WHERE a.response = 'maybe')::int AS maybe_count,
-        COUNT(a.member_id) FILTER (WHERE a.response = 'absent')::int AS absent_count
-      FROM sessions s LEFT JOIN attendance a ON a.session_id = s.id
-      WHERE s.is_cancelled = FALSE AND s.starts_at < NOW()
-    `),
-    pool.query(`
-      SELECT m.id, m.name, COALESCE(history.attended_count, 0)::int AS attended_count
-      FROM members m
-      LEFT JOIN (
-        SELECT a.member_id, COUNT(*) FILTER (WHERE a.response = 'present') AS attended_count
-        FROM attendance a
-        JOIN sessions s ON s.id = a.session_id
-        WHERE s.is_cancelled = FALSE AND s.starts_at < NOW()
-        GROUP BY a.member_id
-      ) history ON history.member_id = m.id
-      ORDER BY attended_count DESC, m.name
-    `)
-  ]);
-  res.json({ summary: summary.rows[0], members: members.rows });
-}));
-
-if (existsSync(frontendDirectory)) {
-  app.use(express.static(frontendDirectory, { index: false, maxAge: "1h" }));
+  };
 }
-app.get("*", (req, res, next) => {
-  if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Route introuvable." });
-  if (!existsSync(path.join(frontendDirectory, "index.html"))) return res.status(404).json({ error: "Route introuvable." });
-  res.sendFile(path.join(frontendDirectory, "index.html"), (error) => {
-    if (error) next(error);
-  });
-});
-app.use((error, _req, res, _next) => {
-  console.error(error);
-  if (res.headersSent) return;
-  if (error.type === "entity.parse.failed") return res.status(400).json({ error: "Le corps JSON est invalide." });
-  if (error.type === "entity.too.large") return res.status(413).json({ error: "Le corps de la requête est trop volumineux." });
-  res.status(500).json({ error: "Une erreur interne est survenue." });
-});
 
-async function start() {
-  await initializeDatabase({ seedDemo: demoMode });
-  if (!demoMode) {
-    const email = process.env.ADMIN_EMAIL.trim().toLowerCase();
-    const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
-    await pool.query(
-      "INSERT INTO coaches (email, password_hash) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING",
-      [email, passwordHash]
-    );
+class InputError extends Error {}
+
+export function createApp({ database = pool } = {}) {
+  const app = express();
+  const requireCoach = coachAuthentication(database);
+  app.disable("x-powered-by");
+  app.set("trust proxy", 1);
+  app.use(helmet());
+  app.use(express.json({ limit: "20kb" }));
+  app.use(cookieParser());
+
+  if (basePath !== "/") {
+    const mountedApiPrefix = `${basePath}api`;
+    app.use((req, _res, next) => {
+      if (req.url === mountedApiPrefix || req.url.startsWith(`${mountedApiPrefix}/`) ||
+          req.url.startsWith(`${mountedApiPrefix}?`)) {
+        req.url = req.url.slice(basePath.length - 1);
+      }
+      next();
+    });
   }
-  app.listen(port, "0.0.0.0", () => console.log(`API Badminton Club démarrée sur le port ${port}.`));
-  const scheduleRefresh = setInterval(() => {
+
+  app.use((req, res, next) => {
+    if (req.body === undefined || req.body === null) req.body = {};
+    if (typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ error: "Les informations envoyées sont invalides." });
+    }
+    next();
+  });
+
+  app.get("/api/health", async (req, res) => {
+    try {
+      await database.query("SELECT 1");
+      return res.json({ status: "ok" });
+    } catch (error) {
+      console.error("Vérification de la base indisponible.", error);
+      return res.status(503).json({ status: "unavailable" });
+    }
+  });
+
+  app.get("/api/config", (_req, res) => res.json({ demoMode, timezone }));
+
+  app.post("/api/auth/login", rateLimit({
+    windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: true, legacyHeaders: false,
+    message: { error: "Trop de tentatives. Veuillez réessayer dans quelques minutes." }
+  }), asyncRoute(async (req, res) => {
+    const password = typeof req.body.password === "string" ? req.body.password : "";
+    if (!password || password.length > 256) {
+      return res.status(401).json({ error: "Mot de passe incorrect." });
+    }
+    const stored = await database.query("SELECT password_hash FROM coach_credentials WHERE id = 1");
+    const hash = stored.rows[0]?.password_hash;
+    if (!hash || !(await bcrypt.compare(password, hash))) {
+      return res.status(401).json({ error: "Mot de passe incorrect." });
+    }
+    const token = crypto.randomBytes(32).toString("base64url");
+    await database.query(`
+      INSERT INTO coach_sessions (token_hash, expires_at)
+      VALUES ($1, NOW() + INTERVAL '12 hours')
+    `, [tokenHash(token)]);
+    res.cookie(cookieName, token, cookieOptions(req));
+    return res.json({ coach: { authenticated: true } });
+  }));
+
+  app.post("/api/auth/logout", asyncRoute(async (req, res) => {
+    const token = req.cookies[cookieName];
+    if (token) await database.query("DELETE FROM coach_sessions WHERE token_hash = $1", [tokenHash(token)]);
+    res.clearCookie(cookieName, { ...cookieOptions(req), maxAge: undefined });
+    return res.status(204).end();
+  }));
+
+  app.get("/api/auth/me", requireCoach, (_req, res) => res.json({ coach: { authenticated: true } }));
+
+  app.get("/api/sessions", asyncRoute(async (_req, res) => {
+    const result = await database.query(`
+      SELECT s.id, s.session_date, s.start_time, s.end_time, s.location,
+        COALESCE(s.coach_name, s.coach, 'Entraîneur') AS coach_name, s.note,
+        s.starts_at, s.ends_at,
+        COUNT(r.id) FILTER (WHERE r.status = 'present')::int AS present_count,
+        COUNT(r.id) FILTER (WHERE r.status = 'absent')::int AS absent_count,
+        COUNT(r.id) FILTER (WHERE r.status = 'incertain')::int AS uncertain_count
+      FROM sessions s
+      LEFT JOIN responses r ON r.session_id = s.id
+      WHERE COALESCE(s.cancelled, s.is_cancelled, FALSE) = FALSE
+        AND s.starts_at >= NOW()
+      GROUP BY s.id
+      ORDER BY s.starts_at
+    `);
+    return res.json({ sessions: result.rows });
+  }));
+
+  app.get("/api/coach/sessions", requireCoach, asyncRoute(async (_req, res) => {
+    const result = await database.query(`
+      SELECT s.id, s.session_date, s.start_time, s.end_time, s.location,
+        COALESCE(s.coach_name, s.coach, 'Entraîneur') AS coach_name, s.note,
+        s.starts_at, s.ends_at
+      FROM sessions s
+      WHERE COALESCE(s.cancelled, s.is_cancelled, FALSE) = FALSE
+      ORDER BY s.starts_at
+    `);
+    return res.json({ sessions: result.rows });
+  }));
+
+  app.get("/api/sessions/:id/responses", asyncRoute(async (req, res) => {
+    const sessionId = validId(req.params.id);
+    if (!sessionId) return res.status(400).json({ error: "Séance introuvable." });
+    const session = await database.query(`
+      SELECT id FROM sessions
+      WHERE id = $1 AND COALESCE(cancelled, is_cancelled, FALSE) = FALSE
+    `, [sessionId]);
+    if (!session.rowCount) return res.status(404).json({ error: "Cette séance n’existe plus." });
+    const result = await database.query(`
+      SELECT p.id AS player_id, p.first_name, p.last_name, r.status
+      FROM responses r
+      JOIN players p ON p.id = r.player_id
+      WHERE r.session_id = $1
+      ORDER BY p.last_name, p.first_name
+    `, [sessionId]);
+    const counts = { present: 0, absent: 0, incertain: 0 };
+    for (const row of result.rows) counts[row.status] += 1;
+    return res.json({ responses: result.rows, counts });
+  }));
+
+  app.post("/api/responses", rateLimit({
+    windowMs: 10 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false,
+    message: { error: "Trop de réponses envoyées. Réessayez dans quelques minutes." }
+  }), asyncRoute(async (req, res) => {
+    const sessionId = validId(req.body.sessionId);
+    const status = req.body.status;
+    if (!sessionId || !statuses.has(status)) {
+      return res.status(400).json({ error: "Choisissez une séance et un statut valide." });
+    }
+    const player = playerName(req.body.firstName, req.body.lastName);
+    if (restrictedDemo && !isFictionalPlayerName(player.normalizedName)) {
+      return res.status(403).json({
+        error: "Cette démonstration accepte uniquement les joueurs fictifs déjà fournis."
+      });
+    }
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const session = await client.query(`
+        SELECT id FROM sessions
+        WHERE id = $1 AND COALESCE(cancelled, is_cancelled, FALSE) = FALSE
+          AND starts_at >= NOW()
+      `, [sessionId]);
+      if (!session.rowCount) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Cette séance est introuvable ou ne prend plus de réponses." });
+      }
+      const createdPlayer = await client.query(`
+        INSERT INTO players (first_name, last_name, normalized_name)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (normalized_name) DO UPDATE
+          SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name
+        RETURNING id, first_name, last_name
+      `, [player.firstName, player.lastName, player.normalizedName]);
+      const result = await client.query(`
+        INSERT INTO responses (session_id, player_id, status)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (session_id, player_id) DO UPDATE
+          SET status = EXCLUDED.status, updated_at = NOW()
+        RETURNING session_id, player_id, status
+      `, [sessionId, createdPlayer.rows[0].id, status]);
+      await client.query("COMMIT");
+      return res.status(200).json({ response: result.rows[0] });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }));
+
+  app.get("/api/trainers", asyncRoute(async (_req, res) => {
+    const result = await database.query("SELECT id, name FROM trainers ORDER BY name");
+    return res.json({ trainers: result.rows });
+  }));
+
+  app.post("/api/trainers", requireCoach, asyncRoute(async (req, res) => {
+    const name = normalizedField(req.body.name, "nom de l’entraîneur");
+    if (restrictedDemo && !isFictionalTrainerName(name)) {
+      return res.status(403).json({ error: "Cette démonstration accepte uniquement les entraîneurs fictifs fournis." });
+    }
+    const result = await database.query(`
+      INSERT INTO trainers (name, normalized_name)
+      VALUES ($1, $2)
+      ON CONFLICT (normalized_name) DO NOTHING
+      RETURNING id, name
+    `, [name, normalizeName(name)]);
+    if (!result.rowCount) return res.status(409).json({ error: "Cet entraîneur figure déjà dans la liste." });
+    return res.status(201).json({ trainer: result.rows[0] });
+  }));
+
+  app.post("/api/sessions", requireCoach, asyncRoute(async (req, res) => {
+    const session = validateSession(req.body);
+    if (restrictedDemo && !isFictionalTrainerName(session.coachName)) {
+      return res.status(403).json({ error: "Cette démonstration accepte uniquement les entraîneurs fictifs fournis." });
+    }
+    await database.query(`
+      INSERT INTO trainers (name, normalized_name) VALUES ($1, $2)
+      ON CONFLICT (normalized_name) DO NOTHING
+    `, [session.coachName, normalizeName(session.coachName)]);
+    const result = await database.query(`
+      INSERT INTO sessions (
+        session_date, start_time, end_time, location, coach_name, note, cancelled,
+        starts_at, ends_at, coach, is_recurring, is_cancelled
+      )
+      VALUES (
+        $1::date, $2::time, $3::time, $4, $5, NULLIF($6, ''), FALSE,
+        ($1::date + $2::time) AT TIME ZONE $7,
+        ($1::date + $3::time) AT TIME ZONE $7,
+        $5, FALSE, FALSE
+      )
+      RETURNING id, session_date, start_time, end_time, location, coach_name, note
+    `, [session.sessionDate, session.startTime, session.endTime, session.location, session.coachName, session.note, timezone]);
+    return res.status(201).json({ session: result.rows[0] });
+  }));
+
+  app.patch("/api/sessions/:id", requireCoach, asyncRoute(async (req, res) => {
+    const id = validId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Séance introuvable." });
+    const session = validateSession(req.body);
+    if (restrictedDemo && !isFictionalTrainerName(session.coachName)) {
+      return res.status(403).json({ error: "Cette démonstration accepte uniquement les entraîneurs fictifs fournis." });
+    }
+    await database.query(`
+      INSERT INTO trainers (name, normalized_name) VALUES ($1, $2)
+      ON CONFLICT (normalized_name) DO NOTHING
+    `, [session.coachName, normalizeName(session.coachName)]);
+    const result = await database.query(`
+      UPDATE sessions
+      SET session_date = $1::date, start_time = $2::time, end_time = $3::time,
+        location = $4, coach_name = $5, note = NULLIF($6, ''), cancelled = FALSE,
+        starts_at = ($1::date + $2::time) AT TIME ZONE $7,
+        ends_at = ($1::date + $3::time) AT TIME ZONE $7,
+        coach = $5, is_recurring = FALSE, is_cancelled = FALSE
+      WHERE id = $8 AND COALESCE(cancelled, is_cancelled, FALSE) = FALSE
+      RETURNING id, session_date, start_time, end_time, location, coach_name, note
+    `, [session.sessionDate, session.startTime, session.endTime, session.location, session.coachName, session.note, timezone, id]);
+    if (!result.rowCount) return res.status(404).json({ error: "Cette séance n’existe plus." });
+    return res.json({ session: result.rows[0] });
+  }));
+
+  app.patch("/api/sessions/:id/cancel", requireCoach, asyncRoute(async (req, res) => {
+    const id = validId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Séance introuvable." });
+    const result = await database.query(`
+      UPDATE sessions SET cancelled = TRUE, is_cancelled = TRUE
+      WHERE id = $1 AND COALESCE(cancelled, is_cancelled, FALSE) = FALSE
+      RETURNING id
+    `, [id]);
+    if (!result.rowCount) return res.status(404).json({ error: "Cette séance n’existe plus." });
+    return res.json({ message: "Séance annulée." });
+  }));
+
+  app.delete("/api/sessions/:id", requireCoach, asyncRoute(async (req, res) => {
+    const id = validId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Séance introuvable." });
+    const result = await database.query("DELETE FROM sessions WHERE id = $1 RETURNING id", [id]);
+    if (!result.rowCount) return res.status(404).json({ error: "Cette séance n’existe plus." });
+    return res.status(204).end();
+  }));
+
+  app.get("/api/players", requireCoach, asyncRoute(async (_req, res) => {
+    const result = await database.query(`
+      SELECT p.id, p.first_name, p.last_name, p.created_at,
+        COUNT(r.id)::int AS response_count
+      FROM players p LEFT JOIN responses r ON r.player_id = p.id
+      GROUP BY p.id ORDER BY p.last_name, p.first_name
+    `);
+    return res.json({ players: result.rows });
+  }));
+
+  app.post("/api/players", requireCoach, asyncRoute(async (req, res) => {
+    const player = playerName(req.body.firstName, req.body.lastName);
+    if (restrictedDemo && !isFictionalPlayerName(player.normalizedName)) {
+      return res.status(403).json({ error: "Cette démonstration accepte uniquement les joueurs fictifs fournis." });
+    }
+    const result = await database.query(`
+      INSERT INTO players (first_name, last_name, normalized_name)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (normalized_name) DO NOTHING
+      RETURNING id, first_name, last_name
+    `, [player.firstName, player.lastName, player.normalizedName]);
+    if (!result.rowCount) return res.status(409).json({ error: "Ce joueur existe déjà." });
+    return res.status(201).json({ player: result.rows[0] });
+  }));
+
+  app.delete("/api/players/:id", requireCoach, asyncRoute(async (req, res) => {
+    const id = validId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Joueur introuvable." });
+    const result = await database.query("DELETE FROM players WHERE id = $1 RETURNING id", [id]);
+    if (!result.rowCount) return res.status(404).json({ error: "Ce joueur n’existe plus." });
+    return res.status(204).end();
+  }));
+
+  app.get("/api/players/:id/history", requireCoach, asyncRoute(async (req, res) => {
+    const id = validId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Joueur introuvable." });
+    const result = await database.query(`
+      SELECT s.id AS session_id, s.session_date, s.start_time, s.location,
+        COALESCE(s.coach_name, s.coach, 'Entraîneur') AS coach_name,
+        r.status, r.actual_presence
+      FROM responses r
+      JOIN sessions s ON s.id = r.session_id
+      WHERE r.player_id = $1 AND COALESCE(s.cancelled, s.is_cancelled, FALSE) = FALSE
+      ORDER BY s.session_date DESC, s.start_time DESC
+    `, [id]);
+    return res.json({ history: result.rows });
+  }));
+
+  app.post("/api/players/merge", requireCoach, asyncRoute(async (req, res) => {
+    const keepId = validId(req.body.keepPlayerId);
+    const mergeId = validId(req.body.mergePlayerId);
+    if (!keepId || !mergeId || keepId === mergeId) {
+      return res.status(400).json({ error: "Sélectionnez deux joueurs différents." });
+    }
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const players = await client.query("SELECT id FROM players WHERE id = ANY($1::int[])", [[keepId, mergeId]]);
+      if (players.rowCount !== 2) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Un des joueurs sélectionnés n’existe plus." });
+      }
+      await client.query(`
+        INSERT INTO responses (session_id, player_id, status, actual_presence, updated_at)
+        SELECT session_id, $1, status, actual_presence, updated_at
+        FROM responses WHERE player_id = $2
+        ON CONFLICT (session_id, player_id) DO NOTHING
+      `, [keepId, mergeId]);
+      await client.query("DELETE FROM players WHERE id = $1", [mergeId]);
+      await client.query("COMMIT");
+      return res.json({ message: "Les joueurs ont été fusionnés." });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }));
+
+  app.get("/api/sessions/:id/coach-responses", requireCoach, asyncRoute(async (req, res) => {
+    const id = validId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Séance introuvable." });
+    const result = await database.query(`
+      SELECT p.id AS player_id, p.first_name, p.last_name, r.status, r.actual_presence
+      FROM players p
+      LEFT JOIN responses r ON r.player_id = p.id AND r.session_id = $1
+      WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1)
+      ORDER BY p.last_name, p.first_name
+    `, [id]);
+    const exists = await database.query("SELECT 1 FROM sessions WHERE id = $1", [id]);
+    if (!exists.rowCount) return res.status(404).json({ error: "Cette séance n’existe plus." });
+    return res.json({ players: result.rows });
+  }));
+
+  app.patch("/api/sessions/:sessionId/responses/:playerId", requireCoach, asyncRoute(async (req, res) => {
+    const sessionId = validId(req.params.sessionId);
+    const playerId = validId(req.params.playerId);
+    const status = req.body.status;
+    const actualPresence = req.body.actualPresence;
+    if (!sessionId || !playerId || (status !== undefined && status !== null && !statuses.has(status)) ||
+        (actualPresence !== undefined && actualPresence !== null && typeof actualPresence !== "boolean")) {
+      return res.status(400).json({ error: "Vérifiez le statut et la présence réelle." });
+    }
+    if (status === undefined && actualPresence === undefined) {
+      return res.status(400).json({ error: "Indiquez au moins une correction à enregistrer." });
+    }
+    if (status === null) {
+      const deleted = await database.query(
+        "DELETE FROM responses WHERE session_id = $1 AND player_id = $2 RETURNING id",
+        [sessionId, playerId]
+      );
+      if (!deleted.rowCount) return res.status(404).json({ error: "Réponse introuvable." });
+      return res.status(204).end();
+    }
+    if (actualPresence !== undefined) {
+      const completedSession = await database.query(
+        "SELECT id FROM sessions WHERE id = $1 AND ends_at < NOW()",
+        [sessionId]
+      );
+      if (!completedSession.rowCount) {
+        return res.status(400).json({ error: "La présence réelle peut être saisie après la séance." });
+      }
+    }
+    const result = await database.query(`
+      INSERT INTO responses (session_id, player_id, status, actual_presence)
+      SELECT $1, $2, COALESCE($3, 'incertain'), $4
+      WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1)
+        AND EXISTS (SELECT 1 FROM players WHERE id = $2)
+      ON CONFLICT (session_id, player_id) DO UPDATE SET
+        status = COALESCE($3, responses.status),
+        actual_presence = CASE WHEN $5 THEN $4 ELSE responses.actual_presence END,
+        updated_at = NOW()
+      RETURNING session_id, player_id, status, actual_presence
+    `, [sessionId, playerId, status ?? null, actualPresence ?? null, actualPresence !== undefined]);
+    if (!result.rowCount) return res.status(404).json({ error: "Séance ou joueur introuvable." });
+    return res.json({ response: result.rows[0] });
+  }));
+
+  app.get("/api/stats", requireCoach, asyncRoute(async (req, res) => {
+    const from = req.query.from || null;
+    const to = req.query.to || null;
+    if ((from && !validDate(from)) || (to && !validDate(to)) || (from && to && from > to)) {
+      return res.status(400).json({ error: "La période sélectionnée est invalide." });
+    }
+    const [players, sessions] = await Promise.all([
+      database.query(`
+        WITH eligible AS (
+          SELECT s.id, s.session_date
+          FROM sessions s
+          WHERE COALESCE(s.cancelled, s.is_cancelled, FALSE) = FALSE
+            AND s.starts_at < NOW()
+            AND ($1::date IS NULL OR s.session_date >= $1::date)
+            AND ($2::date IS NULL OR s.session_date <= $2::date)
+        ),
+        totals AS (SELECT COUNT(*)::int AS total FROM eligible),
+        history AS (
+          SELECT r.player_id,
+            COUNT(r.id)::int AS responses_count,
+            COUNT(r.id) FILTER (WHERE COALESCE(r.actual_presence, r.status = 'present'))::int AS present_count,
+            COUNT(r.id) FILTER (WHERE COALESCE(r.actual_presence, r.status = 'absent'))::int AS absent_count,
+            COUNT(r.id) FILTER (WHERE r.status = 'incertain')::int AS uncertain_count
+          FROM responses r JOIN eligible e ON e.id = r.session_id
+          GROUP BY r.player_id
+        )
+        SELECT p.id, p.first_name, p.last_name,
+          totals.total AS sessions_count,
+          COALESCE(history.present_count, 0)::int AS present_count,
+          COALESCE(history.absent_count, 0)::int AS absent_count,
+          COALESCE(history.uncertain_count, 0)::int AS uncertain_count,
+          GREATEST(totals.total - COALESCE(history.responses_count, 0), 0)::int AS unanswered_count
+        FROM players p CROSS JOIN totals
+        LEFT JOIN history ON history.player_id = p.id
+        ORDER BY p.last_name, p.first_name
+      `, [from, to]),
+      database.query(`
+        SELECT s.id, s.session_date, s.start_time,
+          COALESCE(s.coach_name, s.coach, 'Entraîneur') AS coach_name,
+          COUNT(r.id) FILTER (WHERE COALESCE(r.actual_presence, r.status = 'present'))::int AS present_count,
+          COUNT(r.id) FILTER (WHERE COALESCE(r.actual_presence, r.status = 'absent'))::int AS absent_count,
+          COUNT(r.id)::int AS responses_count,
+          CASE WHEN COUNT(r.id) > 0 THEN ROUND(100.0 *
+              COUNT(r.id) FILTER (WHERE COALESCE(r.actual_presence, r.status = 'present'))
+              / NULLIF(COUNT(r.id), 0), 1)
+            ELSE 0 END AS attendance_rate
+        FROM sessions s
+        LEFT JOIN responses r ON r.session_id = s.id
+        WHERE COALESCE(s.cancelled, s.is_cancelled, FALSE) = FALSE
+          AND s.starts_at < NOW()
+          AND ($1::date IS NULL OR s.session_date >= $1::date)
+          AND ($2::date IS NULL OR s.session_date <= $2::date)
+        GROUP BY s.id ORDER BY s.session_date, s.start_time
+      `, [from, to])
+    ]);
+    const playerStats = players.rows.map((player) => ({
+      ...player,
+      attendance_rate: calculateAttendanceRate(player.present_count, player.sessions_count)
+    })).sort((left, right) => right.attendance_rate - left.attendance_rate ||
+      left.last_name.localeCompare(right.last_name, "fr") ||
+      left.first_name.localeCompare(right.first_name, "fr"));
+    return res.json({ players: playerStats, sessions: sessions.rows });
+  }));
+
+  app.get("/api/stats.csv", requireCoach, asyncRoute(async (req, res) => {
+    const from = req.query.from || null;
+    const to = req.query.to || null;
+    if ((from && !validDate(from)) || (to && !validDate(to)) || (from && to && from > to)) {
+      return res.status(400).json({ error: "La période sélectionnée est invalide." });
+    }
+    const result = await database.query(`
+      WITH eligible AS (
+        SELECT id, session_date FROM sessions
+        WHERE COALESCE(cancelled, is_cancelled, FALSE) = FALSE AND starts_at < NOW()
+          AND ($1::date IS NULL OR session_date >= $1::date)
+          AND ($2::date IS NULL OR session_date <= $2::date)
+      ),
+      total AS (SELECT COUNT(*)::int AS count FROM eligible),
+      player_stats AS (
+        SELECT p.id, p.first_name, p.last_name,
+          COUNT(r.id)::int AS response_count,
+          COUNT(r.id) FILTER (WHERE COALESCE(r.actual_presence, r.status = 'present'))::int AS present_count,
+          COUNT(r.id) FILTER (WHERE COALESCE(r.actual_presence, r.status = 'absent'))::int AS absent_count,
+          COUNT(r.id) FILTER (WHERE r.status = 'incertain')::int AS uncertain
+        FROM players p LEFT JOIN responses r ON r.player_id = p.id AND r.session_id IN (SELECT id FROM eligible)
+        GROUP BY p.id
+      )
+      SELECT first_name, last_name, total.count AS sessions_count,
+        present_count, absent_count,
+        uncertain::int AS uncertain_count,
+        GREATEST(total.count - response_count, 0)::int AS unanswered_count,
+        total.count::int AS attendance_denominator
+      FROM player_stats CROSS JOIN total ORDER BY last_name, first_name
+    `, [from, to]);
+    const headers = ["Prénom", "Nom", "Séances", "Présences", "Absences", "Incertaines", "Sans réponse", "Taux de présence (%)"];
+    const formulaSafe = (value) => {
+      const text = String(value ?? "");
+      return /^[\s]*[=+\-@]/.test(text) ? `'${text}` : text;
+    };
+    const csv = [headers, ...result.rows.map((row) => [
+      row.first_name, row.last_name, row.sessions_count, row.present_count, row.absent_count,
+      row.uncertain_count, row.unanswered_count,
+      calculateAttendanceRate(row.present_count, row.attendance_denominator)
+    ])].map((row) => row.map((field) => `"${formulaSafe(field).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+    res.type("text/csv; charset=utf-8");
+    res.set("Content-Disposition", 'attachment; filename="statistiques-salbris.csv"');
+    return res.send(`\uFEFF${csv}`);
+  }));
+
+  if (existsSync(frontendDirectory)) {
+    app.use(basePath, express.static(frontendDirectory, { index: false, maxAge: "1h" }));
+    app.use(express.static(frontendDirectory, { index: false, maxAge: "1h" }));
+  }
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Cette page n’existe pas." });
+    const indexPath = path.join(frontendDirectory, "index.html");
+    if (!existsSync(indexPath)) return res.status(404).json({ error: "Cette page n’existe pas." });
+    res.sendFile(indexPath, (error) => { if (error) next(error); });
+  });
+
+  app.use((error, _req, res, _next) => {
+    if (error instanceof InputError) return res.status(400).json({ error: error.message });
+    console.error("Erreur de traitement de la requête.", error);
+    if (res.headersSent) return;
+    if (error.type === "entity.parse.failed") return res.status(400).json({ error: "Les informations envoyées ne sont pas valides." });
+    if (error.type === "entity.too.large") return res.status(413).json({ error: "Les informations envoyées sont trop volumineuses." });
+    return res.status(500).json({ error: "Une erreur est survenue. Veuillez réessayer." });
+  });
+  return app;
+}
+
+export async function start() {
+  if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL doit désigner la base PostgreSQL.");
+  if (process.env.COACH_PASSWORD && process.env.COACH_PASSWORD.length < 12) {
+    throw new Error("COACH_PASSWORD doit contenir au moins 12 caractères.");
+  }
+  await initializeDatabase({ seedDemo: demoMode });
+  const app = createApp();
+  const port = Number(process.env.PORT || 3000);
+  const server = app.listen(port, "0.0.0.0", () => console.log(`Badminton Club de Salbris écoute sur le port ${port}.`));
+  const refresh = setInterval(() => {
     ensureUpcomingSessions({ seedDemo: demoMode }).catch((error) => {
       console.error("Impossible de compléter le planning des deux prochaines semaines.", error);
     });
   }, 60 * 60 * 1000);
-  scheduleRefresh.unref();
+  refresh.unref();
+  return server;
 }
 
-start().catch(async (error) => {
-  console.error("Impossible de démarrer l'API.", error);
-  await pool.end();
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  start().catch(async (error) => {
+    console.error("Impossible de démarrer l’application.", error);
+    await pool.end();
+    process.exitCode = 1;
+  });
+}
