@@ -15,7 +15,7 @@ Application React, Express et PostgreSQL pour consulter les entraînements du cl
 - Planning récurrent du mardi (19 h–21 h), du jeudi (19 h–21 h) et du vendredi (19 h–20 h), proposé sur les 14 prochains jours.
 - Migration PostgreSQL idempotente et seed de démonstration composé de joueurs, entraîneurs et séances fictifs.
 
-Les joueurs saisissent leur identité sans compte ; leurs noms et réponses sont visibles dans la liste publique des séances. Ne publiez pas de mot de passe, jeton ou données privées dans le dépôt. Les valeurs du seed sont fictives et ne remplacent pas une politique d’information des membres.
+Les joueurs saisissent leur identité sans compte ; leurs noms et réponses sont visibles dans la liste publique des séances. Ne publiez pas de mot de passe, jeton ou données privées dans le dépôt.
 
 ## Cadrage du besoin
 
@@ -24,7 +24,7 @@ L’application fournit deux parcours :
 1. **Joueur** : choisir une séance à venir, saisir prénom et nom, choisir un statut, puis consulter les réponses déjà reçues.
 2. **Entraîneur** : s’authentifier, administrer les séances et joueurs, enregistrer la présence réelle après l’entraînement et consulter les statistiques.
 
-Le fuseau d’affichage et de calcul du planning est `Europe/Paris`. Le lieu par défaut est `Gymnase Pillon`. Les entraîneurs initiaux (`Camille Martin`, `Émile Petit`, `Lina Moreau`) et les dix joueurs ajoutés par le seed sont fictifs ; l’entraîneur connecté peut réutiliser ces noms ou en ajouter d’autres.
+Le fuseau d’affichage et de calcul du planning est `Europe/Paris`. Le lieu par défaut est `Gymnase Pillon`. Noah BULUT entraîne le jeudi ; Maxime MICHEL entraîne le mardi et le vendredi.
 
 ## Modèle de données
 
@@ -110,7 +110,7 @@ Copier `.env.example` vers `.env`, puis remplacer les valeurs d’exemple :
 | `POSTGRES_PASSWORD` | Compose | Mot de passe du conteneur PostgreSQL ; doit correspondre à celui de `DATABASE_URL`. Utiliser une valeur URL-safe. |
 | `APP_PORT` | Compose | Port publié sur l’hôte, par défaut `3000`. |
 
-Si `COACH_PASSWORD` est absent, l’application utilise le mot de passe fictif `SalbrisDemo2026!` et active le seed de démonstration. Le compte entraîneur de démonstration permet de tester les fonctions d’administration, mais ne contient que des données fictives ; en production démo, seules les personnes fictives préchargées peuvent répondre ou être ajoutées. Une base contenant des joueurs, entraîneurs ou lieux non fictifs est refusée en mode démo. Pour un vrai club et des données réelles, définissez impérativement un `COACH_PASSWORD` privé et robuste (au moins 12 caractères) dans l’environnement de déploiement ; ne réutilisez jamais le mot de passe de démonstration.
+Définissez impérativement un `COACH_PASSWORD` privé et robuste (au moins 12 caractères) dans l’environnement de déploiement ; ne réutilisez jamais le mot de passe de démonstration.
 
 ### Développement avec PostgreSQL local
 
@@ -137,7 +137,7 @@ cd backend
 npm run seed:demo
 ```
 
-Le seed peut être exécuté plusieurs fois sans créer de doublons. Il est destiné à une base de démonstration ; ne l’exécutez pas sur une base contenant les données réelles du club.
+Le seed peut être exécuté plusieurs fois sans créer de doublons.
 
 ### Tests et build du frontend
 
@@ -211,4 +211,3 @@ docs/TESTS.md       Scénarios et résultats des essais
 - Le cookie de session ne contient pas le mot de passe. Le jeton opaque est stocké sous forme SHA-256 en base, avec expiration, et le mot de passe de l’entraîneur est vérifié avec bcrypt.
 - Les stats ne divisent jamais par zéro : taux nul quand il n’y a ni présence constatée ni réponse. Si aucune présence réelle n’a été saisie, le taux s’appuie sur les réponses annoncées.
 - Le taux par joueur est le nombre de séances où la présence est confirmée (réelle lorsqu’elle est saisie, sinon annoncée) divisé par le nombre total de séances non annulées de la période. Une séance sans réponse compte dans les absences sans réponse, et aucune séance donne un taux de `0 %`.
-- Le seed n’utilise que des personnes fictives. Les données existantes de l’ancienne application sont migrées sans effacer les tables historiques.
