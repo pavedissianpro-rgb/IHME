@@ -22,37 +22,13 @@ function splitName(value) {
   return { firstName: parts.shift(), lastName: parts.join(" ") || "-" };
 }
 
-export const fictionalPlayers = [
-  ["Lina", "Martin"], ["Hugo", "Bernard"], ["Inès", "Petit"], ["Noé", "Robert"],
-  ["Jade", "Richard"], ["Adam", "Durand"], ["Léa", "Moreau"], ["Evan", "Simon"],
-  ["Mila", "Laurent"], ["Sacha", "Lefebvre"]
-];
-
-export const fictionalTrainers = [
-  "Camille Martin",
-  "Émile Petit",
-  "Lina Moreau"
-];
-
-export function isFictionalTrainerName(name) {
-  const normalizedName = normalizeName(name);
-  return fictionalTrainers.some((trainer) => normalizeName(trainer) === normalizedName) ||
-    normalizedName === normalizeName("Entraîneur démo");
-}
-
-export function isFictionalPlayerName(normalizedName) {
-  return fictionalPlayers.some(([firstName, lastName]) =>
-    normalizeName(`${firstName} ${lastName}`) === normalizedName
-  ) || /^joueur demo \d{2}$/u.test(normalizedName);
-}
-
 const weeklySchedule = [
-  { weekday: 2, start: "19:00", end: "21:00", env: "CLUB_TUESDAY_COACH", fallback: fictionalTrainers[0] },
-  { weekday: 4, start: "19:00", end: "21:00", env: "CLUB_THURSDAY_COACH", fallback: fictionalTrainers[1] },
-  { weekday: 5, start: "19:00", end: "20:00", env: "CLUB_FRIDAY_COACH", fallback: fictionalTrainers[2] }
+  { weekday: 2, start: "19:00", end: "21:00", env: "CLUB_TUESDAY_COACH", defaultCoach: "Maxime MICHEL" },
+  { weekday: 4, start: "19:00", end: "21:00", env: "CLUB_THURSDAY_COACH", defaultCoach: "Noah BULUT" },
+  { weekday: 5, start: "19:00", end: "20:00", env: "CLUB_FRIDAY_COACH", defaultCoach: "Maxime MICHEL" }
 ];
 
-export async function initializeDatabase({ seedDemo = false } = {}) {
+export async function initializeDatabase() {
   const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
   new Intl.DateTimeFormat("fr-FR", { timeZone: timezone });
 
@@ -62,7 +38,7 @@ export async function initializeDatabase({ seedDemo = false } = {}) {
       starts_at TIMESTAMPTZ,
       ends_at TIMESTAMPTZ,
       location TEXT,
-      coach TEXT DEFAULT 'Entraîneur démo',
+      coach TEXT,
       is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
       is_cancelled BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -76,7 +52,7 @@ export async function initializeDatabase({ seedDemo = false } = {}) {
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS cancelled BOOLEAN;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_recurring BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN NOT NULL DEFAULT FALSE;
-    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coach TEXT DEFAULT 'Entraîneur démo';
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coach TEXT;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
     CREATE TABLE IF NOT EXISTS players (
@@ -125,7 +101,7 @@ export async function initializeDatabase({ seedDemo = false } = {}) {
     SET session_date = (starts_at AT TIME ZONE $1)::date,
         start_time = (starts_at AT TIME ZONE $1)::time,
         end_time = (ends_at AT TIME ZONE $1)::time,
-        coach_name = COALESCE(NULLIF(coach_name, ''), coach, 'Entraîneur démo'),
+        coach_name = COALESCE(NULLIF(coach_name, ''), coach, ''),
         cancelled = COALESCE(cancelled, is_cancelled, FALSE)
     WHERE starts_at IS NOT NULL AND ends_at IS NOT NULL
       AND (session_date IS NULL OR start_time IS NULL OR end_time IS NULL
@@ -133,47 +109,10 @@ export async function initializeDatabase({ seedDemo = false } = {}) {
   `, [timezone]);
 
   await migrateLegacyMembers();
-  if (seedDemo) await assertFictionalDemoData();
-  await seedTrainers({ seedDemo });
-  await seedCoachPassword();
-  if (seedDemo) await seedFictionalPlayers();
-  await ensureUpcomingSessions({ seedDemo });
-  if (seedDemo) await seedPastSessions();
+  await configureCoachPassword();
+  await ensureUpcomingSessions();
   await migrateLegacyAttendance();
   await pool.query("DELETE FROM coach_sessions WHERE expires_at <= NOW()");
-}
-
-async function assertFictionalDemoData() {
-  const allowedPlayers = new Set([
-    ...fictionalPlayers.map(([first, last]) => normalizeName(`${first} ${last}`)),
-    ...Array.from({ length: 99 }, (_, index) => `joueur demo ${String(index + 1).padStart(2, "0")}`)
-  ]);
-  const allowedTrainers = new Set([
-    ...fictionalTrainers.map(normalizeName),
-    normalizeName("Entraîneur démo")
-  ]);
-  const result = await pool.query(`
-    SELECT
-      EXISTS (SELECT 1 FROM players WHERE normalized_name <> ALL($1::text[])) AS has_real_players,
-      EXISTS (SELECT 1 FROM trainers WHERE normalized_name <> ALL($2::text[])) AS has_real_trainers,
-      EXISTS (
-        SELECT 1 FROM sessions
-        WHERE location !~ '^Gymnase de démonstration(?: [0-9]+)?$'
-      ) AS has_real_locations,
-      EXISTS (
-        SELECT 1 FROM sessions
-        WHERE COALESCE(coach_name, coach, '') <> ALL($3::text[])
-      ) AS has_real_session_coaches
-  `, [
-    [...allowedPlayers],
-    [...allowedTrainers],
-    [...fictionalTrainers, "Entraîneur démo"]
-  ]);
-  const data = result.rows[0];
-  if (data.has_real_players || data.has_real_trainers ||
-      data.has_real_locations || data.has_real_session_coaches) {
-    throw new Error("La base contient des données non fictives ; configurez COACH_PASSWORD pour le club privé.");
-  }
 }
 
 async function migrateLegacyMembers() {
@@ -220,21 +159,8 @@ async function migrateLegacyAttendance() {
   }
 }
 
-async function seedTrainers({ seedDemo }) {
-  const names = seedDemo
-    ? fictionalTrainers
-    : weeklySchedule.map(({ env, fallback }) => process.env[env]?.trim() || fallback);
-  for (const name of [...fictionalTrainers, ...names]) {
-    await pool.query(`
-      INSERT INTO trainers (name, normalized_name)
-      VALUES ($1, $2)
-      ON CONFLICT (normalized_name) DO NOTHING
-    `, [name, normalizeName(name)]);
-  }
-}
-
-async function seedCoachPassword() {
-  const password = process.env.COACH_PASSWORD || "SalbrisDemo2026!";
+async function configureCoachPassword() {
+  const password = process.env.COACH_PASSWORD;
   const bcrypt = await import("bcryptjs");
   const passwordHash = await bcrypt.default.hash(password, 12);
   await pool.query(`
@@ -245,22 +171,10 @@ async function seedCoachPassword() {
   `, [passwordHash]);
 }
 
-async function seedFictionalPlayers() {
-  for (const [firstName, lastName] of fictionalPlayers) {
-    await pool.query(`
-      INSERT INTO players (first_name, last_name, normalized_name)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (normalized_name) DO NOTHING
-    `, [firstName, lastName, normalizeName(`${firstName} ${lastName}`)]);
-  }
-}
-
-export async function ensureUpcomingSessions({ seedDemo = false } = {}) {
+export async function ensureUpcomingSessions() {
   const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
-  const location = seedDemo ? "Gymnase de démonstration" : (process.env.CLUB_LOCATION || "Gymnase Pillon");
-  const names = seedDemo
-    ? fictionalTrainers
-    : weeklySchedule.map(({ env, fallback }) => process.env[env]?.trim() || fallback);
+  const location = process.env.CLUB_LOCATION || "Gymnase Pillon";
+  const names = weeklySchedule.map(({ env, defaultCoach }) => process.env[env]?.trim() || defaultCoach);
 
   const client = await pool.connect();
   try {
@@ -338,80 +252,4 @@ export async function ensureUpcomingSessions({ seedDemo = false } = {}) {
   } finally {
     client.release();
   }
-
-  if (seedDemo) {
-    const trainerNames = new Set(names);
-    for (const trainer of trainerNames) {
-      await pool.query(`
-        INSERT INTO trainers (name, normalized_name)
-        VALUES ($1, $2)
-        ON CONFLICT (normalized_name) DO NOTHING
-      `, [trainer, normalizeName(trainer)]);
-    }
-  }
-}
-
-async function seedPastSessions() {
-  const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
-  const location = "Gymnase de démonstration";
-  const names = fictionalTrainers;
-
-  await pool.query(`
-    WITH days AS (
-      SELECT (NOW() AT TIME ZONE $1)::date - day_offset AS local_date
-      FROM generate_series(1, 28) AS offsets(day_offset)
-    ),
-    weekly_schedule(weekday, starts, ends, coach_name) AS (
-      VALUES
-        (2, TIME '19:00', TIME '21:00', $2::text),
-        (4, TIME '19:00', TIME '21:00', $3::text),
-        (5, TIME '19:00', TIME '20:00', $4::text)
-    ),
-    planned AS (
-      SELECT days.local_date AS session_date, weekly_schedule.starts AS start_time,
-        weekly_schedule.ends AS end_time, weekly_schedule.coach_name,
-        (days.local_date + weekly_schedule.starts) AT TIME ZONE $1 AS starts_at,
-        (days.local_date + weekly_schedule.ends) AT TIME ZONE $1 AS ends_at
-      FROM days JOIN weekly_schedule
-        ON EXTRACT(ISODOW FROM days.local_date) = weekly_schedule.weekday
-    )
-    INSERT INTO sessions (
-      starts_at, ends_at, location, coach, is_recurring, is_cancelled,
-      session_date, start_time, end_time, coach_name, cancelled
-    )
-    SELECT starts_at, ends_at, $5, coach_name, TRUE, FALSE,
-      session_date, start_time, end_time, coach_name, FALSE
-    FROM planned
-    WHERE NOT EXISTS (
-      SELECT 1 FROM sessions existing
-      WHERE existing.session_date = planned.session_date
-        AND existing.start_time = planned.start_time
-    )
-  `, [timezone, ...names, location]);
-
-  await pool.query(`
-    INSERT INTO responses (session_id, player_id, status, actual_presence)
-    SELECT s.id, p.id, seed.status, seed.actual_presence
-    FROM (
-      SELECT id, ROW_NUMBER() OVER (ORDER BY session_date, start_time) AS ordinal
-      FROM sessions
-      WHERE session_date < (NOW() AT TIME ZONE $1)::date AND cancelled = FALSE
-      ORDER BY session_date DESC, start_time DESC
-      LIMIT 4
-    ) s
-    CROSS JOIN LATERAL (
-      SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS ordinal
-      FROM players
-      ORDER BY id
-      LIMIT 4
-    ) p
-    JOIN LATERAL (
-      SELECT
-        CASE WHEN ((s.ordinal + p.ordinal) % 4) = 0 THEN 'absent'
-          WHEN ((s.ordinal + p.ordinal) % 4) = 1 THEN 'incertain'
-          ELSE 'present' END AS status,
-        ((s.ordinal + p.ordinal) % 4) <> 0 AS actual_presence
-    ) seed ON TRUE
-    ON CONFLICT (session_id, player_id) DO NOTHING
-  `, [timezone]);
 }

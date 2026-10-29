@@ -65,7 +65,6 @@ function App() {
   const [sessions, setSessions] = useState([]);
   const [trainers, setTrainers] = useState([]);
   const [coach, setCoach] = useState(false);
-  const [demoMode, setDemoMode] = useState(true);
   const [selectedSession, setSelectedSession] = useState("");
   const [responses, setResponses] = useState([]);
   const [counts, setCounts] = useState({ present: 0, absent: 0, incertain: 0 });
@@ -96,12 +95,11 @@ function App() {
   );
 
   const loadPublic = useCallback(async () => {
-    const [sessionData, trainerData, config] = await Promise.all([
-      api("/sessions"), api("/trainers"), api("/config")
+    const [sessionData, trainerData] = await Promise.all([
+      api("/sessions"), api("/trainers")
     ]);
     setSessions(sessionData.sessions);
     setTrainers(trainerData.trainers);
-    setDemoMode(config.demoMode);
     setSelectedSession((current) =>
       sessionData.sessions.some((session) => String(session.id) === String(current))
         ? String(current)
@@ -419,7 +417,6 @@ function App() {
           <span><strong>Badminton Club</strong><small>DE SALBRIS</small></span>
         </a>
         <div className="header-actions">
-          <span className="demo-label">{demoMode ? "Données de démonstration" : "Club de Salbris"}</span>
           {coach
             ? <button className="header-button" onClick={logout}><LogOut size={17} /> Déconnexion</button>
             : <button className="header-button" onClick={() => setLoginOpen(true)}><Shield size={17} /> Espace entraîneur</button>}
@@ -487,7 +484,6 @@ function App() {
               <label>Prénom<input autoComplete="given-name" maxLength="100" required value={playerForm.firstName} onChange={(event) => setPlayerForm({ ...playerForm, firstName: event.target.value })} /></label>
               <label>Nom<input autoComplete="family-name" maxLength="100" required value={playerForm.lastName} onChange={(event) => setPlayerForm({ ...playerForm, lastName: event.target.value })} /></label>
             </div>
-            {demoMode && <p className="demo-notice">Démo : utilisez un joueur fictif, par exemple Lina Martin ou Hugo Bernard. Les nouveaux noms ne sont acceptés que sur l’installation privée du club.</p>}
             <label>Séance
               <span className="select-control"><select required value={selectedSession} onChange={(event) => setSelectedSession(event.target.value)}>
                 <option value="">Choisir une séance à venir</option>

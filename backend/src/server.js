@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { rateLimit } from "express-rate-limit";
 import helmet from "helmet";
 import {
-  ensureUpcomingSessions, initializeDatabase, isFictionalPlayerName, isFictionalTrainerName, normalizeName, pool
+  ensureUpcomingSessions, initializeDatabase, normalizeName, pool
 } from "./db.js";
 
 const appDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -18,8 +18,6 @@ const cookieName = "salbris_coach";
 const statuses = new Set(["present", "absent", "incertain"]);
 const basePath = normalizeBasePath(process.env.BASE_PATH || "/");
 const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
-const demoMode = !process.env.COACH_PASSWORD;
-const restrictedDemo = demoMode && process.env.NODE_ENV === "production";
 
 function normalizeBasePath(value) {
   if (typeof value !== "string" || !/^\/(?:[A-Za-z0-9._~-]+\/)*$/.test(value)) {
@@ -161,8 +159,6 @@ export function createApp({ database = pool } = {}) {
     }
   });
 
-  app.get("/api/config", (_req, res) => res.json({ demoMode, timezone }));
-
   app.post("/api/auth/login", rateLimit({
     windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: true, legacyHeaders: false,
     message: { error: "Trop de tentatives. Veuillez réessayer dans quelques minutes." }
@@ -254,11 +250,6 @@ export function createApp({ database = pool } = {}) {
       return res.status(400).json({ error: "Choisissez une séance et un statut valide." });
     }
     const player = playerName(req.body.firstName, req.body.lastName);
-    if (restrictedDemo && !isFictionalPlayerName(player.normalizedName)) {
-      return res.status(403).json({
-        error: "Cette démonstration accepte uniquement les joueurs fictifs déjà fournis."
-      });
-    }
     const client = await database.connect();
     try {
       await client.query("BEGIN");
@@ -302,9 +293,6 @@ export function createApp({ database = pool } = {}) {
 
   app.post("/api/trainers", requireCoach, asyncRoute(async (req, res) => {
     const name = normalizedField(req.body.name, "nom de l’entraîneur");
-    if (restrictedDemo && !isFictionalTrainerName(name)) {
-      return res.status(403).json({ error: "Cette démonstration accepte uniquement les entraîneurs fictifs fournis." });
-    }
     const result = await database.query(`
       INSERT INTO trainers (name, normalized_name)
       VALUES ($1, $2)
@@ -317,9 +305,6 @@ export function createApp({ database = pool } = {}) {
 
   app.post("/api/sessions", requireCoach, asyncRoute(async (req, res) => {
     const session = validateSession(req.body);
-    if (restrictedDemo && !isFictionalTrainerName(session.coachName)) {
-      return res.status(403).json({ error: "Cette démonstration accepte uniquement les entraîneurs fictifs fournis." });
-    }
     await database.query(`
       INSERT INTO trainers (name, normalized_name) VALUES ($1, $2)
       ON CONFLICT (normalized_name) DO NOTHING
@@ -344,9 +329,6 @@ export function createApp({ database = pool } = {}) {
     const id = validId(req.params.id);
     if (!id) return res.status(400).json({ error: "Séance introuvable." });
     const session = validateSession(req.body);
-    if (restrictedDemo && !isFictionalTrainerName(session.coachName)) {
-      return res.status(403).json({ error: "Cette démonstration accepte uniquement les entraîneurs fictifs fournis." });
-    }
     await database.query(`
       INSERT INTO trainers (name, normalized_name) VALUES ($1, $2)
       ON CONFLICT (normalized_name) DO NOTHING
@@ -397,9 +379,6 @@ export function createApp({ database = pool } = {}) {
 
   app.post("/api/players", requireCoach, asyncRoute(async (req, res) => {
     const player = playerName(req.body.firstName, req.body.lastName);
-    if (restrictedDemo && !isFictionalPlayerName(player.normalizedName)) {
-      return res.status(403).json({ error: "Cette démonstration accepte uniquement les joueurs fictifs fournis." });
-    }
     const result = await database.query(`
       INSERT INTO players (first_name, last_name, normalized_name)
       VALUES ($1, $2, $3)
@@ -655,16 +634,19 @@ export function createApp({ database = pool } = {}) {
 }
 
 export async function start() {
-  if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL doit désigner la base PostgreSQL.");
-  if (process.env.COACH_PASSWORD && process.env.COACH_PASSWORD.length < 12) {
+  if (!process.env.COACH_PASSWORD) {
+    throw new Error("COACH_PASSWORD est obligatoire. Configurez un mot de passe entraîneur privé avant de démarrer l’application.");
+  }
+  if (process.env.COACH_PASSWORD.length < 12) {
     throw new Error("COACH_PASSWORD doit contenir au moins 12 caractères.");
   }
-  await initializeDatabase({ seedDemo: demoMode });
+  if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL doit désigner la base PostgreSQL.");
+  await initializeDatabase();
   const app = createApp();
   const port = Number(process.env.PORT || 3000);
   const server = app.listen(port, "0.0.0.0", () => console.log(`Badminton Club de Salbris écoute sur le port ${port}.`));
   const refresh = setInterval(() => {
-    ensureUpcomingSessions({ seedDemo: demoMode }).catch((error) => {
+    ensureUpcomingSessions().catch((error) => {
       console.error("Impossible de compléter le planning des deux prochaines semaines.", error);
     });
   }, 60 * 60 * 1000);

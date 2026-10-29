@@ -1,34 +1,71 @@
 # Badminton Club de Salbris
 
-Application React, Express et PostgreSQL pour consulter les entraînements du club, annoncer sa présence et permettre à l’entraîneur de suivre les séances. L’interface est en français et conçue pour être utilisée sur téléphone.
+Un site web pour organiser les entraînements du club de badminton de Salbris.
 
-## Fonctionnalités
+- Les **joueurs** disent s'ils viennent ou non à l'entraînement.
+- L'**entraîneur** crée les séances, voit qui sera là et consulte les statistiques de présence.
 
-- Séance à venir mise en avant, avec date, horaires, gymnase et entraîneur.
-- Réponse publique sans compte avec prénom, nom et statut **Présent**, **Absent** ou **Incertain**.
-- Une réponse répétée pour le même prénom/nom normalisé et la même séance remplace la précédente.
-- Liste publique des réponses et compteurs par statut.
-- Espace entraîneur protégé côté serveur par mot de passe bcrypt et cookie de session `httpOnly`.
-- Création, modification, annulation et suppression de séances ; note facultative et liste d’entraîneurs réutilisable.
-- Gestion des joueurs, correction des réponses, fusion de doublons et présence réellement constatée.
-- Statistiques filtrées par dates, historique d’un joueur, graphique et export CSV.
-- Planning récurrent du mardi (19 h–21 h), du jeudi (19 h–21 h) et du vendredi (19 h–20 h), proposé sur les 14 prochains jours.
-- Migration PostgreSQL idempotente et seed de démonstration composé de joueurs, entraîneurs et séances fictifs.
+Le site est en français et se lit bien sur téléphone.
 
-Les joueurs saisissent leur identité sans compte ; leurs noms et réponses sont visibles dans la liste publique des séances. Ne publiez pas de mot de passe, jeton ou données privées dans le dépôt.
+## Sommaire
+
+1. [Ce que fait le site](#ce-que-fait-le-site)
+2. [Vrais noms des joueurs et des entraîneurs](#vrais-noms-des-joueurs-et-des-entraîneurs)
+3. [Cadrage du besoin](#cadrage-du-besoin)
+4. [Modèle de données](#modèle-de-données)
+5. [API et règles métier](#api-et-règles-métier)
+6. [Lancer le site sur son ordinateur](#lancer-le-site-sur-son-ordinateur)
+7. [Tests](#tests)
+8. [Déploiement (mise en ligne)](#déploiement-mise-en-ligne)
+9. [Données personnelles](#données-personnelles)
+10. [Organisation des dossiers](#organisation-des-dossiers)
+11. [Choix de conception](#choix-de-conception)
+12. [Petit lexique](#petit-lexique)
+
+## Ce que fait le site
+
+### Pour un joueur (aucun compte à créer)
+
+- Voir la prochaine séance : date, horaires, gymnase et nom de l'entraîneur.
+- Écrire son prénom et son nom, puis choisir **Présent**, **Absent** ou **Incertain**.
+- Changer d'avis : si le même joueur répond une deuxième fois pour la même séance, sa nouvelle réponse remplace l'ancienne (pas de doublon). Les majuscules, les accents et les espaces en trop sont ignorés.
+- Voir la liste des réponses et le nombre de présents, d'absents et d'incertains.
+
+### Pour l'entraîneur (avec un mot de passe)
+
+- Créer, modifier, annuler ou supprimer une séance. Chaque séance a son entraîneur, une note facultative et un gymnase.
+- Gérer les joueurs : en ajouter, en supprimer, corriger une réponse, et **fusionner deux fiches** quand un joueur apparaît en double (par exemple « Jean Dupont » et « Dupont Jean »).
+- Noter après la séance qui était **réellement** présent. C'est différent de la réponse donnée avant.
+- Consulter les **statistiques** : taux de présence de chacun, historique d'un joueur, graphique, et export CSV (un fichier lisible dans Excel).
+- Utiliser le **planning habituel** proposé automatiquement pour les 14 prochains jours : mardi 19 h–21 h, jeudi 19 h–21 h et vendredi 19 h–20 h.
+
+## Vrais noms des joueurs et des entraîneurs
+
+Le site s'utilise avec les **vrais noms** des joueurs et des entraîneurs du club de Salbris. Sur une base neuve, aucun joueur ni entraîneur n'est ajouté automatiquement : seuls les entraînements récurrents des 14 prochains jours sont proposés. Les joueurs sont ajoutés lors de leur première réponse et les entraîneurs lorsqu'une séance est créée. Les migrations conservent les données déjà présentes dans une ancienne base.
+
+Ne mettez jamais de mot de passe ou de jeton dans le dépôt GitHub. Comme les noms des joueurs sont visibles sur le site, lisez aussi la section [Données personnelles](#données-personnelles).
 
 ## Cadrage du besoin
 
-L’application fournit deux parcours :
+**Le problème :** l'entraîneur ne sait pas à l'avance combien de joueurs viendront, et ne garde pas de trace de la présence de chacun.
 
-1. **Joueur** : choisir une séance à venir, saisir prénom et nom, choisir un statut, puis consulter les réponses déjà reçues.
-2. **Entraîneur** : s’authentifier, administrer les séances et joueurs, enregistrer la présence réelle après l’entraînement et consulter les statistiques.
+**La solution :** un site où chaque joueur répond en quelques secondes, et où l'entraîneur voit les réponses et les statistiques.
 
-Le fuseau d’affichage et de calcul du planning est `Europe/Paris`. Le lieu par défaut est `Gymnase Pillon`. Noah BULUT entraîne le jeudi ; Maxime MICHEL entraîne le mardi et le vendredi.
+**Deux parcours :**
+
+1. **Joueur** : choisir une séance, écrire son prénom et son nom, choisir un statut, puis voir les réponses déjà reçues.
+2. **Entraîneur** : se connecter, gérer les séances et les joueurs, noter la présence réelle après l'entraînement, et consulter les statistiques.
+
+**Repères :** les dates et heures suivent le fuseau `Europe/Paris`. Le lieu par défaut est le `Gymnase Pillon`. Noah BULUT entraîne le jeudi ; Maxime MICHEL entraîne le mardi et le vendredi. Ces noms peuvent être changés dans l'espace entraîneur ou avec les variables `CLUB_TUESDAY_COACH`, `CLUB_THURSDAY_COACH` et `CLUB_FRIDAY_COACH` (voir le tableau plus bas).
 
 ## Modèle de données
 
-Les tables `members` et `attendance` de l’ancienne version sont conservées pour compatibilité. La migration copie leurs membres et réponses vers les nouvelles tables sans supprimer les données historiques.
+Les informations sont rangées dans une **base de données** (PostgreSQL), sous forme de tableaux appelés *tables*. Il y en a quatre :
+
+- **players** : la liste des joueurs (prénom, nom).
+- **sessions** : la liste des séances (date, heures, gymnase, entraîneur, note, annulée ou non).
+- **responses** : les réponses. Une réponse relie **un joueur** à **une séance** et contient son statut (présent, absent ou incertain) et, plus tard, sa présence réelle.
+- **trainers** : la liste des entraîneurs, que l'on peut réutiliser d'une séance à l'autre.
 
 ```mermaid
 erDiagram
@@ -67,54 +104,88 @@ erDiagram
     }
 ```
 
-`responses` impose une réponse unique par `(session_id, player_id)`. `status` accepte `present`, `absent` ou `incertain`. `actual_presence` est indépendant de la réponse annoncée : `true` signifie présent réellement, `false` absent réellement et `NULL` pas encore constaté. Les identifiants sont reliés par des clés étrangères avec suppression en cascade.
+Comment lire ce schéma : un joueur peut avoir plusieurs réponses (une par séance), et une séance peut recevoir plusieurs réponses (une par joueur).
 
-À chaque démarrage, l’application exécute les créations de tables/index idempotentes (`IF NOT EXISTS`) et ajoute les colonnes manquantes. La migration historique garde les colonnes utilisées par l’ancienne version. Le pool PostgreSQL est limité à quatre connexions.
+**Les règles de la table `responses` :**
+
+- Un joueur ne peut avoir **qu'une seule** réponse par séance.
+- `status` vaut `present`, `absent` ou `incertain`, rien d'autre.
+- `actual_presence` est la présence **réelle**, notée par l'entraîneur après la séance : `true` = était là, `false` = n'était pas là, vide = pas encore noté. Elle est indépendante de la réponse donnée avant.
+- Si on supprime un joueur ou une séance, ses réponses sont supprimées avec lui.
+
+**Au démarrage**, le site vérifie que les tables existent et les crée si besoin, sans effacer ce qui est déjà là. On peut donc le relancer sans risque. Les anciennes tables `members` et `attendance` de la première version sont gardées, et leurs données sont copiées dans les nouvelles. Le site utilise au maximum **4 connexions** à la base en même temps.
 
 ## API et règles métier
 
-L’API est exposée sous `/api` par Express, qui sert aussi le build React.
+L'**API** est la « porte » par laquelle le site affiché dans le navigateur (le *frontend*) parle au serveur (le *backend*). Toutes les adresses commencent par `/api`.
 
-| Méthode | Route | Accès | Rôle |
+Schéma simple d'un échange :
+
+```text
+Téléphone du joueur  →  Serveur (Express)  →  Base de données (PostgreSQL)
+  (le site React)    ←                      ←
+```
+
+| Méthode | Adresse | Qui peut l'utiliser | À quoi ça sert |
 |---|---|---|---|
-| `GET` | `/api/health` | Public | Exécute `SELECT 1`; réponse `{ "status": "ok" }` ou HTTP 503 `{ "status": "unavailable" }`. |
-| `GET` | `/api/sessions` | Public | Séances à venir non annulées et compteurs. |
-| `GET` | `/api/sessions/:id/responses` | Public | Réponses et compteurs de la séance. |
-| `POST` | `/api/responses` | Public, limité en débit | Crée ou met à jour la réponse du joueur identifié par son nom normalisé. |
-| `POST` | `/api/auth/login` | Public, limité en débit | Compare le mot de passe avec bcrypt et établit un cookie de session. |
-| `POST` | `/api/auth/logout` | Public | Révoque la session et supprime le cookie. |
-| `GET` | `/api/auth/me` | Entraîneur | Vérifie la session. |
-| `GET` | `/api/coach/sessions`, `/api/players`, `/api/trainers` | Entraîneur | Données d’administration. |
-| `POST`, `PATCH`, `DELETE` | `/api/sessions...` | Entraîneur | Gérer, annuler ou supprimer une séance. |
-| `POST`, `DELETE` | `/api/players...` | Entraîneur | Gérer les joueurs. |
-| `POST` | `/api/players/merge` | Entraîneur | Fusionner un joueur doublon vers le joueur conservé. |
-| `PATCH` | `/api/sessions/:id/responses/:playerId` | Entraîneur | Corriger une réponse et/ou enregistrer la présence réelle. |
-| `GET` | `/api/players/:id/history`, `/api/stats`, `/api/stats.csv` | Entraîneur | Historique, statistiques par période et export CSV. |
+| `GET` | `/api/health` | Tout le monde | Vérifier que le site fonctionne : répond `{ "status": "ok" }`, ou une erreur 503 si la base est inaccessible. |
+| `GET` | `/api/sessions` | Tout le monde | Voir les séances à venir (non annulées) et les compteurs. |
+| `GET` | `/api/sessions/:id/responses` | Tout le monde | Voir les réponses d'une séance. |
+| `POST` | `/api/responses` | Tout le monde (limité en nombre d'essais) | Envoyer ou modifier sa réponse. |
+| `POST` | `/api/auth/login` | Tout le monde (limité en nombre d'essais) | Se connecter comme entraîneur. |
+| `POST` | `/api/auth/logout` | Tout le monde | Se déconnecter. |
+| `GET` | `/api/auth/me` | Entraîneur | Vérifier qu'on est bien connecté. |
+| `GET` | `/api/coach/sessions`, `/api/players`, `/api/trainers` | Entraîneur | Lire les données d'administration. |
+| `POST`, `PATCH`, `DELETE` | `/api/sessions...` | Entraîneur | Créer, modifier, annuler ou supprimer une séance. |
+| `POST`, `DELETE` | `/api/players...` | Entraîneur | Ajouter ou supprimer un joueur. |
+| `POST` | `/api/players/merge` | Entraîneur | Fusionner deux fiches du même joueur. |
+| `PATCH` | `/api/sessions/:id/responses/:playerId` | Entraîneur | Corriger une réponse ou noter la présence réelle. |
+| `GET` | `/api/players/:id/history`, `/api/stats`, `/api/stats.csv` | Entraîneur | Historique d'un joueur, statistiques, export CSV. |
 
-Les requêtes SQL utilisent des paramètres. Les entrées sont contrôlées côté serveur. Les erreurs techniques sont journalisées côté serveur et remplacées par un message français compréhensible pour le client.
+*(`GET` = lire des informations ; `POST` = envoyer ou créer ; `PATCH` = modifier ; `DELETE` = supprimer.)*
 
-## Installation et variables d’environnement
+**Règles de fonctionnement :**
 
-Prérequis : Node.js 24, npm et PostgreSQL 17 (ou Docker avec Docker Compose).
+- Les actions de l'entraîneur sont **vérifiées par le serveur** : cacher un bouton ne suffit pas, le serveur refuse l'action si on n'est pas connecté.
+- Toutes les informations reçues sont **contrôlées** (longueur, statut autorisé…) et les requêtes SQL sont écrites de façon sûre.
+- En cas de problème technique, le détail est gardé dans les journaux du serveur et la personne voit un **message simple en français**.
 
-Copier `.env.example` vers `.env`, puis remplacer les valeurs d’exemple :
+**Comment est calculé le taux de présence d'un joueur :**
 
-| Variable | Obligatoire | Description |
+> nombre de séances où il était présent ÷ nombre de séances non annulées de la période
+
+- Si l'entraîneur a noté la présence réelle, on l'utilise. Sinon, on utilise la réponse donnée par le joueur.
+- Une séance sans réponse compte comme une absence sans réponse.
+- Il n'y a jamais de division par zéro : s'il n'y a aucune séance, le taux est de `0 %`.
+
+## Lancer le site sur son ordinateur
+
+### Ce qu'il faut installer
+
+- **Node.js 24** et **npm** : pour faire fonctionner le code JavaScript.
+- **PostgreSQL 17** : la base de données. Ou bien **Docker** avec Docker Compose, qui s'occupe de tout (voir plus bas).
+
+### Réglages (variables d'environnement)
+
+Ce sont des réglages secrets ou propres à chaque installation. Copiez le fichier `.env.example` vers `.env`, puis remplacez les valeurs d'exemple.
+
+| Réglage | Obligatoire ? | Explication |
 |---|---:|---|
-| `DATABASE_URL` | Oui | URL PostgreSQL, par exemple `postgres://badminton:mot-de-passe-url-safe@database:5432/badminton` dans Compose. |
-| `COACH_PASSWORD` | Production : oui | Mot de passe entraîneur (au moins 12 caractères). Il est haché avec bcrypt avant stockage. |
-| `BASE_PATH` | Non | Chemin de publication ; valeur par défaut Docker `/ihme/`. |
-| `CLUB_TIMEZONE` | Non | Fuseau IANA du club, par défaut `Europe/Paris`. |
-| `CLUB_LOCATION` | Non | Lieu utilisé par les séances récurrentes, par défaut `Gymnase Pillon`. |
-| `CLUB_TUESDAY_COACH`, `CLUB_THURSDAY_COACH`, `CLUB_FRIDAY_COACH` | Non | Entraîneurs du planning récurrent en mode privé. Laisser vides pour les entraîneurs fictifs par défaut. |
-| `POSTGRES_PASSWORD` | Compose | Mot de passe du conteneur PostgreSQL ; doit correspondre à celui de `DATABASE_URL`. Utiliser une valeur URL-safe. |
-| `APP_PORT` | Compose | Port publié sur l’hôte, par défaut `3000`. |
+| `DATABASE_URL` | Oui | L'adresse de la base de données, par exemple `postgres://badminton:mot-de-passe@database:5432/badminton`. Sur le serveur du cours, elle est fournie automatiquement. |
+| `COACH_PASSWORD` | Oui | Mot de passe privé de l'entraîneur, 12 caractères minimum. Le serveur refuse de démarrer si cette variable est absente ou trop courte. Le mot de passe est haché avec bcrypt avant d'être enregistré. |
+| `BASE_PATH` | Non | Le « sous-dossier » du site dans l'adresse web. Par défaut `/ihme/` avec Docker. Utilisez `/` si le site est à la racine d'un domaine. |
+| `CLUB_TIMEZONE` | Non | Le fuseau horaire, par défaut `Europe/Paris`. |
+| `CLUB_LOCATION` | Non | Le gymnase des séances habituelles, par défaut `Gymnase Pillon`. |
+| `CLUB_TUESDAY_COACH`, `CLUB_THURSDAY_COACH`, `CLUB_FRIDAY_COACH` | Non | L'entraîneur du mardi, du jeudi et du vendredi. Ces noms peuvent aussi être modifiés dans l'espace entraîneur. |
+| `POSTGRES_PASSWORD` | Avec Compose | Le mot de passe de la base dans Docker. Il doit être **identique** à celui de `DATABASE_URL`. Évitez les caractères spéciaux. |
+| `APP_PORT` | Avec Compose | Le port d'accès sur votre ordinateur, par défaut `3000`. |
 
-Définissez impérativement un `COACH_PASSWORD` privé et robuste (au moins 12 caractères) dans l’environnement de déploiement ; ne réutilisez jamais le mot de passe de démonstration.
+**Choisissez toujours un `COACH_PASSWORD` privé et solide.** Ne réutilisez jamais un mot de passe déjà utilisé ailleurs et ne le publiez pas dans le dépôt Git.
 
-### Développement avec PostgreSQL local
+### Étapes sans Docker
 
-Créer une base PostgreSQL, définir `DATABASE_URL` avec l’hôte local (`localhost`), puis lancer les deux processus :
+1. Créez une base PostgreSQL et indiquez son adresse dans `DATABASE_URL` (avec `localhost` comme serveur).
+2. Dans un premier terminal, lancez le serveur :
 
 ```powershell
 cd backend
@@ -122,7 +193,7 @@ npm install
 npm run dev
 ```
 
-Dans un second terminal :
+3. Dans un deuxième terminal, lancez l'affichage :
 
 ```powershell
 cd frontend
@@ -130,16 +201,11 @@ npm install
 npm run dev
 ```
 
-Vite démarre habituellement sur `http://localhost:5173`. Il relaie les appels API vers Express sur le port `3000`. Pour disposer des données fictives en base :
+4. Ouvrez `http://localhost:5173` dans votre navigateur. Cette adresse transmet automatiquement les demandes au serveur, qui tourne sur le port `3000`.
 
-```powershell
-cd backend
-npm run seed:demo
-```
+## Tests
 
-Le seed peut être exécuté plusieurs fois sans créer de doublons.
-
-### Tests et build du frontend
+Les tests vérifient automatiquement que le site fonctionne comme prévu. Pour les lancer :
 
 ```powershell
 cd backend
@@ -154,60 +220,118 @@ $env:BASE_PATH = "/ihme/"
 npm run build
 ```
 
-Les tests automatisés et les essais exécutés sont consignés dans [docs/TESTS.md](./docs/TESTS.md).
+La commande `npm run build` prépare la version finale du site. On la lance une fois normalement et une fois avec le chemin `/ihme/`, pour vérifier que les deux fonctionnent.
 
-## Déploiement
+Les essais effectués, avec ce qu'on a entré, ce qu'on attendait et ce qu'on a obtenu, sont écrits dans [docs/TESTS.md](./docs/TESTS.md).
 
-### Docker Compose
+## Déploiement (mise en ligne)
 
-Après avoir renseigné `.env` avec des mots de passe privés :
+Mettre le site « en ligne » veut dire le faire tourner sur un serveur, pour qu'on puisse y accéder depuis Internet. Nous utilisons **Docker** : c'est une « boîte » qui contient tout ce qu'il faut pour que le site fonctionne de la même façon partout.
+
+### Essayer avec Docker Compose
+
+Une fois le fichier `.env` rempli avec des mots de passe privés :
 
 ```powershell
 docker compose up --build -d
 ```
 
-Le site est servi par **un seul processus Express** sur le port `3000`, à l’adresse `http://localhost:3000/ihme/` avec la configuration par défaut. La vérification de santé est disponible sur `http://localhost:3000/api/health` et `http://localhost:3000/ihme/api/health`. PostgreSQL persiste dans le volume `postgres_data`.
+- Le site est alors disponible sur `http://localhost:3000/ihme/` (avec les réglages par défaut).
+- Pour vérifier qu'il fonctionne : `http://localhost:3000/api/health` ou `http://localhost:3000/ihme/api/health`.
+- Les données de la base sont conservées dans un espace appelé `postgres_data`.
 
-Arrêt sans supprimer les données :
+Pour arrêter sans perdre les données :
 
 ```powershell
 docker compose down
 ```
 
-Le Dockerfile racine construit Vite puis copie le build dans l’image Express. Le processus du conteneur s’exécute comme l’utilisateur non privilégié `node` (UID 1000). Pour le build seul :
+Pour construire seulement l'image (la « boîte ») :
 
 ```powershell
 docker build --build-arg BASE_PATH=/ihme/ -t badminton-salbris .
 ```
 
-### Chemin `/ihme/` et proxy
+Le site tourne dans la boîte avec un utilisateur sans droits spéciaux (`node`, numéro 1000), pour des raisons de sécurité.
 
-Vite compile les assets et le client appelle l’API sous `${import.meta.env.BASE_URL}api`. Pour `BASE_PATH=/ihme/`, les appels navigateur arrivent sur `/ihme/api/...`. Le proxy public doit **retirer le préfixe `/ihme`** avant de transmettre à Express ; les routes Express restent `/api/...`. Le cookie entraîneur est `httpOnly`, limité au chemin `BASE_PATH`, et sécurisé en production derrière HTTPS.
+### 1. Serveur du cours IHME
 
-Pour l’hébergement étudiant IHME, la construction d’image seule ne remplace pas le site publié. Avant la construction, configurer `IHME_BASE_PATH` dans les variables GitHub avec `/ihme/` (ou exactement le préfixe attribué au site) : sans cette variable, le workflow inchangé construit les assets à la racine `/`. Après la publication, ouvrir **Actions → Construire et publier l’image → Run workflow**, sélectionner `main`, puis cocher **« Déployer cette version après construction »** avant de lancer. L’image doit être autorisée pour le projet et les paramètres privés de déploiement (`IHME_DEPLOY_URL`, `IHME_DEPLOY_TOKEN`) configurés dans GitHub ; ne les ajoutez jamais au dépôt. Le workflow et `deploy/request.py` ne sont pas modifiés par ce projet.
+C'est le serveur partagé du cours. Sa galerie de la promotion donne accès aux projets : toute personne qui ouvre votre site peut voir la liste des réponses. Voir [Données personnelles](#données-personnelles).
 
-## Structure du projet
+**Ne déployez pas cette configuration sur IHME pour le club.** La galerie est publique, le planning affiche les vrais noms des entraîneurs, le formulaire accepte les vrais noms des joueurs, et les présences sont visibles publiquement. De plus, le workflow actuel ne configure pas le secret obligatoire `COACH_PASSWORD` pour le serveur IHME. Pour utiliser le site avec le club, choisissez un hébergement privé qui permet de définir ce secret ; n'y ajoutez des données réelles qu'après avoir vérifié qui peut les consulter.
+
+Le site est publié sous l'adresse `/ihme/`. Le serveur retire ce préfixe avant de transmettre la demande à notre programme : dans le code, les adresses de l'API commencent donc simplement par `/api`. Le cookie de connexion de l'entraîneur est limité à ce chemin et sécurisé (HTTPS).
+
+Étapes :
+
+0. Ne lancer ce déploiement qu'après avoir confirmé que la plateforme fournit `COACH_PASSWORD` de manière privée et qu'aucun nom ou présence réelle ne sera exposé dans la galerie publique.
+1. Dans GitHub : **Settings → Secrets and variables → Actions**, vérifier que la variable `IHME_BASE_PATH` vaut `/ihme/` (ou exactement le chemin attribué). Sinon, le site est construit pour la racine `/` et s'affiche mal.
+2. Vérifier que `IHME_DEPLOY_URL` (variable) et `IHME_DEPLOY_TOKEN` (secret) sont renseignés. Ne les écrivez **jamais** dans le dépôt.
+3. Envoyer le code sur GitHub (`git add`, `git commit`, `git push`). L'image Docker est alors préparée.
+4. Dans GitHub : **Actions → Construire et publier l'image → Run workflow**, choisir `main`, cocher **« Déployer cette version après construction »**, puis lancer.
+
+Le fichier de workflow et `deploy/request.py` ne sont pas modifiés par ce projet.
+
+### 2. Option : hébergement privé du club
+
+Si vous préférez que le site ne soit pas dans la galerie du cours, vous pouvez le mettre sur un hébergement **à part**, qui fournit une base PostgreSQL et une adresse sécurisée (HTTPS).
+
+1. Construire l'image à la racine du domaine : `docker build --build-arg BASE_PATH=/ -t badminton-salbris .`
+2. Régler sur l'hébergeur : `DATABASE_URL` (base privée), `COACH_PASSWORD` (privé, solide), et si besoin `CLUB_LOCATION` et les entraîneurs du planning.
+3. Vérifier `/api/health`, se connecter comme entraîneur, puis ajouter les entraîneurs et laisser les joueurs répondre.
+4. Activer les sauvegardes de la base.
+
+## Données personnelles
+
+Avec de vrais joueurs, le site manipule des **données personnelles**.
+
+- **Ce qui est enregistré :** prénom, nom, réponse (présent, absent, incertain) et présence réelle.
+- **Ce que tout le monde voit :** la liste des réponses d'une séance, avec prénoms, noms et statuts. Sur le serveur du cours, cela inclut les personnes de la promotion qui ouvrent la galerie.
+- **Ce que seul l'entraîneur voit :** l'historique par joueur, les statistiques et l'export CSV. Ce fichier contient des noms : ne le publiez pas et ne l'ajoutez pas dans Git.
+- **Suppression :** l'entraîneur peut supprimer un joueur à sa demande.
+- **Conseils :** prévenir les membres de l'usage de leurs noms, demander l'accord des parents pour les mineurs, choisir un hébergement sécurisé (HTTPS) de préférence en Union européenne, sauvegarder la base et ne garder les données que le temps nécessaire.
+
+Ces conseils ne remplacent pas un avis juridique.
+
+## Organisation des dossiers
 
 ```text
-backend/
-  src/db.js          Pool, migration additive, planning et seed fictif
-  src/server.js      API Express, authentification, règles métier et fichiers statiques
-  src/seed.js        Commande de seed de démonstration
-  test/              Tests HTTP et métier de l’API
-frontend/
-  src/App.jsx        Parcours joueur et espace entraîneur
-  src/styles.css     Identité visuelle responsive et accessible
-  src/App.test.jsx   Test du formulaire connecté à l’API simulée
-deploy/request.py    Client de déploiement IHME (inchangé)
-Dockerfile          Build frontend et image Express finale
-docker-compose.yml  Application et PostgreSQL
-docs/TESTS.md       Scénarios et résultats des essais
+backend/                 Le serveur (la « cuisine »)
+  src/db.js              Connexion à la base, création des tables, planning
+  src/server.js          L'API, la connexion entraîneur, les règles et l'envoi du site
+  test/                  Les tests du serveur
+frontend/                Le site affiché dans le navigateur (la « salle »)
+  src/App.jsx            Les pages joueur et entraîneur
+  src/styles.css         L'apparence (couleurs, mise en page, téléphone)
+  src/App.test.jsx       Un test du formulaire
+deploy/request.py        Le programme qui envoie le site sur le serveur du cours (ne pas modifier)
+Dockerfile               La recette pour fabriquer la « boîte » Docker
+docker-compose.yml       Lance le site et sa base de données ensemble
+docs/TESTS.md            Les essais réalisés et leurs résultats
 ```
 
 ## Choix de conception
 
-- L’identité d’un joueur est normalisée en Unicode : casse, accents et espaces superflus sont ignorés. Une réponse répétée met à jour l’enregistrement unique de la séance.
-- Les noms renseignés par les joueurs et les réponses sont visibles dans l’interface publique ; aucun compte joueur n’est requis.
-- Le cookie de session ne contient pas le mot de passe. Le jeton opaque est stocké sous forme SHA-256 en base, avec expiration, et le mot de passe de l’entraîneur est vérifié avec bcrypt.
-- Les stats ne divisent jamais par zéro : taux nul quand il n’y a ni présence constatée ni réponse. Si aucune présence réelle n’a été saisie, le taux s’appuie sur les réponses annoncées.
-- Le taux par joueur est le nombre de séances où la présence est confirmée (réelle lorsqu’elle est saisie, sinon annoncée) divisé par le nombre total de séances non annulées de la période. Une séance sans réponse compte dans les absences sans réponse, et aucune séance donne un taux de `0 %`.
+- **Pas de compte joueur.** On écrit simplement son prénom et son nom : c'est rapide sur téléphone. L'inconvénient : quelqu'un peut répondre à la place d'un autre.
+- **Noms normalisés.** « émile petit » et « Emile  Petit » sont reconnus comme la même personne.
+- **Réponses visibles par tous.** Aucun compte n'est demandé, donc la liste est publique (voir [Données personnelles](#données-personnelles)).
+- **Connexion entraîneur sûre.** Le mot de passe est brouillé avant d'être enregistré. Le cookie de connexion ne contient pas le mot de passe, mais un code aléatoire stocké en version brouillée (SHA-256) avec une date d'expiration.
+- **Présence annoncée et présence réelle séparées.** Ce que dit le joueur avant n'est pas forcément ce qui se passe ensuite : les deux sont conservés.
+- **Statistiques sans erreur.** Pas de division par zéro, et les séances annulées ne comptent pas.
+
+## Petit lexique
+
+| Mot | Sens simple |
+|---|---|
+| **Frontend** | La partie du site que l'on voit et utilise dans le navigateur (écrite avec React). |
+| **Backend** | Le programme sur le serveur, que l'on ne voit pas (écrit avec Node.js et Express). |
+| **API** | Les « portes » par lesquelles le frontend demande des informations au backend. |
+| **Base de données** | L'endroit où les informations sont rangées durablement (PostgreSQL). |
+| **Table** | Un tableau dans la base de données (par exemple, la liste des joueurs). |
+| **Variable d'environnement** | Un réglage secret ou propre à chaque installation, comme un mot de passe. |
+| **Migration** | La création ou la mise à jour des tables au démarrage, sans perdre les données. |
+| **Docker** | Une « boîte » qui contient le site et tout ce qu'il lui faut pour fonctionner partout. |
+| **Haché (bcrypt)** | Un mot de passe transformé en code illisible : même si on le vole, on ne le lit pas. |
+| **Cookie de session** | Un petit code gardé par le navigateur pour rester connecté. |
+| **HTTPS** | La version sécurisée d'une adresse web : les échanges sont chiffrés. |
+| **CSV** | Un fichier de tableau simple, que l'on ouvre avec Excel. |

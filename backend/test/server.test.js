@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import request from "supertest";
-import { calculateAttendanceRate, createApp } from "../src/server.js";
-import { isFictionalPlayerName, isFictionalTrainerName, normalizeName } from "../src/db.js";
+import { calculateAttendanceRate, createApp, start } from "../src/server.js";
+import { normalizeName } from "../src/db.js";
 
 class FixtureDatabase {
   constructor() {
@@ -79,7 +79,7 @@ test("la route de santé renvoie 503 sans exposer l’erreur PostgreSQL", async 
   }
 });
 
-test("une réponse joueur valide est enregistrée", async () => {
+test("une réponse joueur valide avec un nom saisi est enregistrée", async () => {
   const database = new FixtureDatabase();
   const response = await request(createApp({ database }))
     .post("/api/responses")
@@ -120,11 +120,21 @@ test("les noms ignorent la casse, les accents et les espaces superflus", () => {
   assert.equal(normalizeName("  Élodie   DURAND "), "elodie durand");
 });
 
-test("les joueurs et entraîneurs de démonstration sont fictifs et identifiables", () => {
-  assert.equal(isFictionalPlayerName(normalizeName("LINA MARTIN")), true);
-  assert.equal(isFictionalPlayerName(normalizeName("Vrai Joueur")), false);
-  assert.equal(isFictionalTrainerName("ÉMILE PETIT"), true);
-  assert.equal(isFictionalTrainerName("Entraîneur réel"), false);
+test("le serveur refuse de démarrer sans mot de passe entraîneur", async () => {
+  const coachPassword = process.env.COACH_PASSWORD;
+  const databaseUrl = process.env.DATABASE_URL;
+  delete process.env.COACH_PASSWORD;
+  process.env.DATABASE_URL = "postgres://localhost/badminton";
+  try {
+    await assert.rejects(start(), {
+      message: "COACH_PASSWORD est obligatoire. Configurez un mot de passe entraîneur privé avant de démarrer l’application."
+    });
+  } finally {
+    if (coachPassword === undefined) delete process.env.COACH_PASSWORD;
+    else process.env.COACH_PASSWORD = coachPassword;
+    if (databaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = databaseUrl;
+  }
 });
 
 test("le taux de présence gère le dénominateur nul", () => {

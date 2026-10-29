@@ -23,7 +23,6 @@ describe("formulaire de présence joueur", () => {
         }] });
       }
       if (address.endsWith("/api/trainers")) return jsonResponse({ trainers: [] });
-      if (address.endsWith("/api/config")) return jsonResponse({ demoMode: true, timezone: "Europe/Paris" });
       if (address.endsWith("/api/auth/me")) return jsonResponse({ error: "Connectez-vous." }, 401);
       if (address.endsWith("/api/sessions/12/responses")) {
         return jsonResponse({ responses: [], counts: { present: 0, absent: 0, incertain: 0 } });
