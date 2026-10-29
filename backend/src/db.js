@@ -1,4 +1,5 @@
 import pg from "pg";
+import crypto from "node:crypto";
 
 const { Pool } = pg;
 
@@ -28,11 +29,11 @@ const weeklySchedule = [
   { weekday: 5, start: "19:00", end: "20:00", env: "CLUB_FRIDAY_COACH", defaultCoach: "Maxime MICHEL" }
 ];
 
-export async function initializeDatabase() {
+export async function initializeDatabase({ database = pool } = {}) {
   const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
   new Intl.DateTimeFormat("fr-FR", { timeZone: timezone });
 
-  await pool.query(`
+  await database.query(`
     CREATE TABLE IF NOT EXISTS sessions (
       id SERIAL PRIMARY KEY,
       starts_at TIMESTAMPTZ,
@@ -44,6 +45,9 @@ export async function initializeDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CONSTRAINT sessions_valid_time CHECK (ends_at > starts_at)
     );
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS location TEXT;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ends_at TIMESTAMPTZ;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_date DATE;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS start_time TIME;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS end_time TIME;
@@ -54,6 +58,7 @@ export async function initializeDatabase() {
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coach TEXT;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    ALTER TABLE sessions ALTER COLUMN coach DROP DEFAULT;
 
     CREATE TABLE IF NOT EXISTS players (
       id SERIAL PRIMARY KEY,
@@ -82,6 +87,8 @@ export async function initializeDatabase() {
       password_hash TEXT NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE coach_credentials ADD COLUMN IF NOT EXISTS password_hash TEXT;
+    ALTER TABLE coach_credentials ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     CREATE TABLE IF NOT EXISTS coach_sessions (
       token_hash TEXT PRIMARY KEY,
       expires_at TIMESTAMPTZ NOT NULL,
@@ -96,7 +103,7 @@ export async function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS coach_sessions_expiry_idx ON coach_sessions(expires_at);
   `);
 
-  await pool.query(`
+  await database.query(`
     UPDATE sessions
     SET session_date = (starts_at AT TIME ZONE $1)::date,
         start_time = (starts_at AT TIME ZONE $1)::time,
@@ -108,15 +115,15 @@ export async function initializeDatabase() {
         OR coach_name IS NULL OR cancelled IS NULL)
   `, [timezone]);
 
-  await migrateLegacyMembers();
-  await configureCoachPassword();
-  await ensureUpcomingSessions();
-  await migrateLegacyAttendance();
-  await pool.query("DELETE FROM coach_sessions WHERE expires_at <= NOW()");
+  await migrateLegacyMembers(database);
+  await configureCoachPassword(database);
+  await ensureUpcomingSessions({ database });
+  await migrateLegacyAttendance(database);
+  await database.query("DELETE FROM coach_sessions WHERE expires_at <= NOW()");
 }
 
-async function migrateLegacyMembers() {
-  const result = await pool.query(`
+async function migrateLegacyMembers(database) {
+  const result = await database.query(`
     SELECT id, name FROM members
   `).catch((error) => {
     if (error.code === "42P01") return { rows: [] };
@@ -128,7 +135,7 @@ async function migrateLegacyMembers() {
     if (!name) continue;
     const { firstName, lastName } = splitName(name);
     const normalizedName = normalizeName(`${firstName} ${lastName}`);
-    await pool.query(`
+    await database.query(`
       INSERT INTO players (first_name, last_name, normalized_name)
       VALUES ($1, $2, $3)
       ON CONFLICT (normalized_name) DO NOTHING
@@ -136,8 +143,8 @@ async function migrateLegacyMembers() {
   }
 }
 
-async function migrateLegacyAttendance() {
-  const attendance = await pool.query(`
+async function migrateLegacyAttendance(database) {
+  const attendance = await database.query(`
     SELECT a.session_id, m.name, a.response
     FROM attendance a
     JOIN members m ON m.id = a.member_id
@@ -151,7 +158,7 @@ async function migrateLegacyAttendance() {
     const normalizedName = normalizeName(`${firstName} ${lastName}`);
     const status = row.response === "maybe" ? "incertain" : row.response;
     if (!["present", "absent", "incertain"].includes(status)) continue;
-    await pool.query(`
+    await database.query(`
       INSERT INTO responses (session_id, player_id, status)
       SELECT $1, id, $3 FROM players WHERE normalized_name = $2
       ON CONFLICT (session_id, player_id) DO NOTHING
@@ -159,24 +166,48 @@ async function migrateLegacyAttendance() {
   }
 }
 
-async function configureCoachPassword() {
+export async function configureCoachPassword(database = pool) {
   const password = process.env.COACH_PASSWORD;
   const bcrypt = await import("bcryptjs");
-  const passwordHash = await bcrypt.default.hash(password, 12);
-  await pool.query(`
+  if (password) {
+    if (password.length < 12) throw new Error("COACH_PASSWORD doit contenir au moins 12 caractères.");
+    const passwordHash = await bcrypt.default.hash(password, 12);
+    await database.query(`
+      INSERT INTO coach_credentials (id, password_hash)
+      VALUES (1, $1)
+      ON CONFLICT (id) DO UPDATE
+      SET password_hash = EXCLUDED.password_hash, updated_at = NOW()
+    `, [passwordHash]);
+    return;
+  }
+
+  const existing = await database.query("SELECT password_hash FROM coach_credentials WHERE id = 1");
+  if (existing.rows[0]?.password_hash) return;
+
+  const generatedPassword = crypto.randomBytes(24).toString("base64url");
+  const generatedHash = await bcrypt.default.hash(generatedPassword, 12);
+  const inserted = await database.query(`
     INSERT INTO coach_credentials (id, password_hash)
     VALUES (1, $1)
     ON CONFLICT (id) DO UPDATE
     SET password_hash = EXCLUDED.password_hash, updated_at = NOW()
-  `, [passwordHash]);
+    WHERE coach_credentials.password_hash IS NULL
+    RETURNING id
+  `, [generatedHash]);
+  if (inserted.rowCount) {
+    console.warn(
+      "Aucun COACH_PASSWORD configuré. Mot de passe entraîneur généré (à récupérer maintenant dans les journaux du serveur) :",
+      generatedPassword
+    );
+  }
 }
 
-export async function ensureUpcomingSessions() {
+export async function ensureUpcomingSessions({ database = pool } = {}) {
   const timezone = process.env.CLUB_TIMEZONE || "Europe/Paris";
   const location = process.env.CLUB_LOCATION || "Gymnase Pillon";
   const names = weeklySchedule.map(({ env, defaultCoach }) => process.env[env]?.trim() || defaultCoach);
 
-  const client = await pool.connect();
+  const client = await database.connect();
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(74192831)");

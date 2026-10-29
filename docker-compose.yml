@@ -26,7 +26,7 @@ services:
       PORT: 3000
       BASE_PATH: ${BASE_PATH:-/ihme/}
       DATABASE_URL: ${DATABASE_URL:?Configurez DATABASE_URL dans .env}
-      COACH_PASSWORD: ${COACH_PASSWORD:?Définissez COACH_PASSWORD dans .env}
+      COACH_PASSWORD: ${COACH_PASSWORD:-}
       CLUB_TIMEZONE: ${CLUB_TIMEZONE:-Europe/Paris}
       CLUB_LOCATION: ${CLUB_LOCATION:-Gymnase Pillon}
       CLUB_TUESDAY_COACH: ${CLUB_TUESDAY_COACH:-}

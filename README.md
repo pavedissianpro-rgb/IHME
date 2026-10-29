@@ -172,7 +172,7 @@ Ce sont des réglages secrets ou propres à chaque installation. Copiez le fichi
 | Réglage | Obligatoire ? | Explication |
 |---|---:|---|
 | `DATABASE_URL` | Oui | L'adresse de la base de données, par exemple `postgres://badminton:mot-de-passe@database:5432/badminton`. Sur le serveur du cours, elle est fournie automatiquement. |
-| `COACH_PASSWORD` | Oui | Mot de passe privé de l'entraîneur, 12 caractères minimum. Le serveur refuse de démarrer si cette variable est absente ou trop courte. Le mot de passe est haché avec bcrypt avant d'être enregistré. |
+| `COACH_PASSWORD` | Non | Mot de passe privé de l'entraîneur (12 caractères minimum). S'il est absent, l'application en génère un aléatoire au premier démarrage et l'affiche une seule fois dans les journaux du serveur. Traitez cette ligne de journal comme un secret. S'il est défini, il est haché avec bcrypt et utilisé à chaque démarrage. |
 | `BASE_PATH` | Non | Le « sous-dossier » du site dans l'adresse web. Par défaut `/ihme/` avec Docker. Utilisez `/` si le site est à la racine d'un domaine. |
 | `CLUB_TIMEZONE` | Non | Le fuseau horaire, par défaut `Europe/Paris`. |
 | `CLUB_LOCATION` | Non | Le gymnase des séances habituelles, par défaut `Gymnase Pillon`. |
@@ -180,7 +180,7 @@ Ce sont des réglages secrets ou propres à chaque installation. Copiez le fichi
 | `POSTGRES_PASSWORD` | Avec Compose | Le mot de passe de la base dans Docker. Il doit être **identique** à celui de `DATABASE_URL`. Évitez les caractères spéciaux. |
 | `APP_PORT` | Avec Compose | Le port d'accès sur votre ordinateur, par défaut `3000`. |
 
-**Choisissez toujours un `COACH_PASSWORD` privé et solide.** Ne réutilisez jamais un mot de passe déjà utilisé ailleurs et ne le publiez pas dans le dépôt Git.
+Si l'hébergeur ne permet pas de définir `COACH_PASSWORD`, récupérez le mot de passe initial dans les journaux privés du serveur dès le premier démarrage et conservez-le dans un gestionnaire de mots de passe. Ne partagez jamais cette ligne de journal. Si l'accès aux journaux n'est pas privé, configurez un `COACH_PASSWORD` dans un gestionnaire de secrets avant d'ouvrir l'application aux joueurs.
 
 ### Étapes sans Docker
 
@@ -258,13 +258,13 @@ Le site tourne dans la boîte avec un utilisateur sans droits spéciaux (`node`,
 
 C'est le serveur partagé du cours. Sa galerie de la promotion donne accès aux projets : toute personne qui ouvre votre site peut voir la liste des réponses. Voir [Données personnelles](#données-personnelles).
 
-**Ne déployez pas cette configuration sur IHME pour le club.** La galerie est publique, le planning affiche les vrais noms des entraîneurs, le formulaire accepte les vrais noms des joueurs, et les présences sont visibles publiquement. De plus, le workflow actuel ne configure pas le secret obligatoire `COACH_PASSWORD` pour le serveur IHME. Pour utiliser le site avec le club, choisissez un hébergement privé qui permet de définir ce secret ; n'y ajoutez des données réelles qu'après avoir vérifié qui peut les consulter.
+**L'application peut démarrer sur IHME avec seulement `DATABASE_URL`**, mais les données de l'instance partagée sont visibles publiquement : le planning peut afficher les noms des entraîneurs, les joueurs peuvent saisir leur nom et les présences sont publiques. N'utilisez pas cette instance avec les données réelles du club. Le mot de passe entraîneur initial est généré aléatoirement et affiché une fois dans les journaux du serveur ; ne lancez pas plusieurs instances sur une base partagée avant d'avoir récupéré ce secret.
 
 Le site est publié sous l'adresse `/ihme/`. Le serveur retire ce préfixe avant de transmettre la demande à notre programme : dans le code, les adresses de l'API commencent donc simplement par `/api`. Le cookie de connexion de l'entraîneur est limité à ce chemin et sécurisé (HTTPS).
 
 Étapes :
 
-0. Ne lancer ce déploiement qu'après avoir confirmé que la plateforme fournit `COACH_PASSWORD` de manière privée et qu'aucun nom ou présence réelle ne sera exposé dans la galerie publique.
+0. Vérifier que les journaux où le mot de passe initial sera affiché ne sont accessibles qu'à vous ; traiter le secret comme un mot de passe et ne jamais le publier.
 1. Dans GitHub : **Settings → Secrets and variables → Actions**, vérifier que la variable `IHME_BASE_PATH` vaut `/ihme/` (ou exactement le chemin attribué). Sinon, le site est construit pour la racine `/` et s'affiche mal.
 2. Vérifier que `IHME_DEPLOY_URL` (variable) et `IHME_DEPLOY_TOKEN` (secret) sont renseignés. Ne les écrivez **jamais** dans le dépôt.
 3. Envoyer le code sur GitHub (`git add`, `git commit`, `git push`). L'image Docker est alors préparée.

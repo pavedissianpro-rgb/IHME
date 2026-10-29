@@ -633,20 +633,16 @@ export function createApp({ database = pool } = {}) {
   return app;
 }
 
-export async function start() {
-  if (!process.env.COACH_PASSWORD) {
-    throw new Error("COACH_PASSWORD est obligatoire. Configurez un mot de passe entraîneur privé avant de démarrer l’application.");
-  }
-  if (process.env.COACH_PASSWORD.length < 12) {
+export async function start({ database = pool, port = Number(process.env.PORT || 3000) } = {}) {
+  if (process.env.COACH_PASSWORD && process.env.COACH_PASSWORD.length < 12) {
     throw new Error("COACH_PASSWORD doit contenir au moins 12 caractères.");
   }
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL doit désigner la base PostgreSQL.");
-  await initializeDatabase();
-  const app = createApp();
-  const port = Number(process.env.PORT || 3000);
+  await initializeDatabase({ database });
+  const app = createApp({ database });
   const server = app.listen(port, "0.0.0.0", () => console.log(`Badminton Club de Salbris écoute sur le port ${port}.`));
   const refresh = setInterval(() => {
-    ensureUpcomingSessions().catch((error) => {
+    ensureUpcomingSessions({ database }).catch((error) => {
       console.error("Impossible de compléter le planning des deux prochaines semaines.", error);
     });
   }, 60 * 60 * 1000);

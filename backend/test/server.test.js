@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import request from "supertest";
 import { calculateAttendanceRate, createApp, start } from "../src/server.js";
-import { normalizeName } from "../src/db.js";
+import { configureCoachPassword, initializeDatabase, normalizeName } from "../src/db.js";
 
 class FixtureDatabase {
   constructor() {
@@ -56,6 +56,42 @@ class FixtureClient {
   }
 
   release() {}
+}
+
+class EmptyMigrationDatabase {
+  constructor() {
+    this.schema = "";
+    this.planningStatements = [];
+  }
+
+  async query(sql) {
+    if (sql.trim() === "SELECT 1") return { rows: [{ "?column?": 1 }], rowCount: 1 };
+    if (sql.includes("CREATE TABLE IF NOT EXISTS sessions")) {
+      this.schema = sql;
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("UPDATE sessions")) return { rows: [], rowCount: 0 };
+    if (sql.includes("SELECT id, name FROM members") ||
+        sql.includes("SELECT a.session_id, m.name, a.response")) {
+      const error = new Error("relation does not exist");
+      error.code = "42P01";
+      throw error;
+    }
+    if (sql.startsWith("SELECT password_hash")) return { rows: [], rowCount: 0 };
+    if (sql.includes("INSERT INTO coach_credentials")) return { rows: [{ id: 1 }], rowCount: 1 };
+    if (sql.includes("DELETE FROM coach_sessions")) return { rows: [], rowCount: 0 };
+    throw new Error(`Unexpected migration query: ${sql}`);
+  }
+
+  async connect() {
+    return {
+      query: async (sql) => {
+        this.planningStatements.push(sql);
+        return { rows: [], rowCount: 0 };
+      },
+      release() {}
+    };
+  }
 }
 
 test("la route de santé exécute la requête SQL et ne renvoie que le statut", async () => {
@@ -120,16 +156,95 @@ test("les noms ignorent la casse, les accents et les espaces superflus", () => {
   assert.equal(normalizeName("  Élodie   DURAND "), "elodie durand");
 });
 
-test("le serveur refuse de démarrer sans mot de passe entraîneur", async () => {
+test("l'absence de COACH_PASSWORD génère un secret aléatoire une seule fois", async () => {
+  const coachPassword = process.env.COACH_PASSWORD;
+  delete process.env.COACH_PASSWORD;
+  let storedHash;
+  let credentialExists = false;
+  let generatedLog = "";
+  const database = {
+    async query(sql, values = []) {
+      if (sql.startsWith("SELECT password_hash")) {
+        return { rows: credentialExists ? [{ password_hash: storedHash }] : [], rowCount: credentialExists ? 1 : 0 };
+      }
+      if (sql.includes("INSERT INTO coach_credentials")) {
+        if (credentialExists) return { rows: [], rowCount: 0 };
+        storedHash = values[0];
+        credentialExists = true;
+        return { rows: [{ id: 1 }], rowCount: 1 };
+      }
+      throw new Error(`Unexpected fixture query: ${sql}`);
+    }
+  };
+  const originalWarn = console.warn;
+  console.warn = (...args) => { generatedLog = args.join(" "); };
+  try {
+    await configureCoachPassword(database);
+    const generatedPassword = generatedLog.split(" : ").at(-1);
+    assert.ok(generatedPassword.length >= 32);
+    assert.match(storedHash, /^\$2[aby]\$/u);
+    const bcrypt = await import("bcryptjs");
+    assert.equal(await bcrypt.default.compare(generatedPassword, storedHash), true);
+
+    generatedLog = "";
+    await configureCoachPassword(database);
+    assert.equal(generatedLog, "");
+  } finally {
+    console.warn = originalWarn;
+    if (coachPassword === undefined) delete process.env.COACH_PASSWORD;
+    else process.env.COACH_PASSWORD = coachPassword;
+  }
+});
+
+test("la migration tolère une base vide et crée uniquement le planning", async () => {
+  const database = new EmptyMigrationDatabase();
+  const coachPassword = process.env.COACH_PASSWORD;
+  delete process.env.COACH_PASSWORD;
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    await initializeDatabase({ database });
+  } finally {
+    console.warn = originalWarn;
+    if (coachPassword === undefined) delete process.env.COACH_PASSWORD;
+    else process.env.COACH_PASSWORD = coachPassword;
+  }
+
+  assert.match(database.schema, /CREATE TABLE IF NOT EXISTS players/u);
+  assert.match(database.schema, /CREATE TABLE IF NOT EXISTS responses/u);
+  assert.match(database.schema, /ALTER TABLE sessions ADD COLUMN IF NOT EXISTS starts_at/u);
+  assert.ok(database.planningStatements.some((sql) => sql.includes("INSERT INTO sessions")));
+  assert.ok(database.planningStatements.every((sql) => !sql.includes("INSERT INTO players")));
+  assert.ok(database.planningStatements.every((sql) => !sql.includes("INSERT INTO trainers")));
+});
+
+test("le serveur démarre avec DATABASE_URL seul et répond au contrôle de santé", async () => {
   const coachPassword = process.env.COACH_PASSWORD;
   const databaseUrl = process.env.DATABASE_URL;
   delete process.env.COACH_PASSWORD;
-  process.env.DATABASE_URL = "postgres://localhost/badminton";
+  process.env.DATABASE_URL = "postgres://fixture/badminton";
+  const database = new EmptyMigrationDatabase();
+  const originalWarn = console.warn;
+  const originalLog = console.log;
+  console.warn = () => {};
+  console.log = () => {};
+  let server;
   try {
-    await assert.rejects(start(), {
-      message: "COACH_PASSWORD est obligatoire. Configurez un mot de passe entraîneur privé avant de démarrer l’application."
+    server = await start({ database, port: 0 });
+    await new Promise((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
     });
+    assert.equal(server.address().address, "0.0.0.0");
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/health`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { status: "ok" });
   } finally {
+    if (server?.listening) await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+    console.warn = originalWarn;
+    console.log = originalLog;
     if (coachPassword === undefined) delete process.env.COACH_PASSWORD;
     else process.env.COACH_PASSWORD = coachPassword;
     if (databaseUrl === undefined) delete process.env.DATABASE_URL;
